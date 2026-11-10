@@ -8,11 +8,13 @@ from __future__ import annotations
 import datetime as dt
 import io
 import json
+import os
 import re
 import secrets
 import sqlite3
 import threading
 import unicodedata
+from contextlib import contextmanager
 from pathlib import Path
 
 BASE = Path(__file__).resolve().parent
@@ -136,32 +138,93 @@ def sumar_dias(fecha: str | None, dias: int) -> str:
 
 
 # ------------------------------------------------------------- base de datos
-def conectar() -> sqlite3.Connection:
-    DB_PATH.parent.mkdir(parents=True, exist_ok=True)
-    c = sqlite3.connect(DB_PATH, timeout=30)
-    c.execute("pragma journal_mode=wal")
-    return c
+# Si existe DATABASE_URL (variable de entorno o secreto de Streamlit) se usa Postgres
+# (Supabase). Si no, se usa el archivo SQLite datos/backorder.db.
+_pool = None
+
+
+def _db_url():
+    url = os.environ.get("DATABASE_URL")
+    if url:
+        return url
+    try:
+        import streamlit as st
+        return st.secrets.get("DATABASE_URL")
+    except Exception:
+        return None
+
+
+def usa_postgres() -> bool:
+    return bool(_db_url())
+
+
+class _Cx:
+    """Conexión mínima común para SQLite y Postgres (usa ? como marcador en ambos)."""
+
+    def __init__(self, raw, pg):
+        self.raw, self.pg = raw, pg
+
+    def _q(self, sql):
+        return sql.replace("?", "%s") if self.pg else sql
+
+    def execute(self, sql, params=()):
+        return self.raw.execute(self._q(sql), params)
+
+    def executemany(self, sql, seq):
+        seq = list(seq)
+        if not seq:
+            return
+        if self.pg:
+            with self.raw.cursor() as cur:
+                cur.executemany(self._q(sql), seq)
+        else:
+            self.raw.executemany(sql, seq)
+
+
+@contextmanager
+def conectar():
+    if usa_postgres():
+        global _pool
+        if _pool is None:
+            from psycopg_pool import ConnectionPool
+            _pool = ConnectionPool(_db_url(), min_size=1, max_size=4, open=True, timeout=30,
+                                   kwargs={"prepare_threshold": None})
+        with _pool.connection() as c:  # confirma al salir, deshace si hay error
+            yield _Cx(c, True)
+    else:
+        DB_PATH.parent.mkdir(parents=True, exist_ok=True)
+        c = sqlite3.connect(DB_PATH, timeout=30)
+        c.execute("pragma journal_mode=wal")
+        try:
+            yield _Cx(c, False)
+            c.commit()
+        except Exception:
+            c.rollback()
+            raise
+        finally:
+            c.close()
 
 
 def iniciar_db():
     with conectar() as c:
-        c.executescript(
-            """create table if not exists repuestos(id text primary key, data text not null);
-               create table if not exists cargas(id text primary key, ts text, data text not null);
-               create table if not exists empaques(id text primary key, ts text, data text not null);
-               create table if not exists config(key text primary key, value text);""")
-    respaldo_diario()
+        for sql in ("create table if not exists repuestos(id text primary key, data text not null)",
+                    "create table if not exists cargas(id text primary key, ts text, data text not null)",
+                    "create table if not exists empaques(id text primary key, ts text, data text not null)",
+                    "create table if not exists config(key text primary key, value text)"):
+            c.execute(sql)
+    if not usa_postgres():
+        respaldo_diario()
 
 
 def respaldo_diario(guardar: int = 30):
-    """Copia la base de datos una vez al día en datos/respaldos y conserva las últimas `guardar` copias."""
+    """Copia el archivo SQLite una vez al día en datos/respaldos (solo en modo local)."""
     carpeta = DB_PATH.parent / "respaldos"
     destino = carpeta / f"backorder_{hoy()}.db"
-    if destino.exists():
+    if destino.exists() or not DB_PATH.exists():
         return
     try:
         carpeta.mkdir(parents=True, exist_ok=True)
-        with conectar() as src, sqlite3.connect(destino) as dst:
+        with sqlite3.connect(DB_PATH) as src, sqlite3.connect(destino) as dst:
             src.backup(dst)
         for viejo in sorted(carpeta.glob("backorder_*.db"))[:-guardar]:
             viejo.unlink()
@@ -171,43 +234,55 @@ def respaldo_diario(guardar: int = 30):
 
 def cargar_repuestos() -> dict[str, dict]:
     with conectar() as c:
-        return {i: json.loads(d) for i, d in c.execute("select id, data from repuestos")}
+        return {i: json.loads(d) for i, d in c.execute("select id, data from repuestos").fetchall()}
+
+
+def contar_repuestos() -> int:
+    with conectar() as c:
+        return c.execute("select count(*) from repuestos").fetchone()[0]
 
 
 def guardar_cambios(patch: dict[str, dict]):
     """Mezcla campos en repuestos existentes. Un valor None borra el campo."""
     if not patch:
         return
+    ids = list(patch)
     with _lock, conectar() as c:
+        actuales = {}
+        for i in range(0, len(ids), 400):
+            parte = ids[i:i + 400]
+            q = "select id, data from repuestos where id in (" + ",".join("?" * len(parte)) + ")"
+            actuales.update({rid: json.loads(d) for rid, d in c.execute(q, parte).fetchall()})
+        filas = []
         for rid, campos in patch.items():
-            fila = c.execute("select data from repuestos where id=?", (rid,)).fetchone()
-            if not fila:
+            r = actuales.get(rid)
+            if r is None:
                 continue
-            r = json.loads(fila[0])
             for k, v in campos.items():
                 if v is None:
                     r.pop(k, None)
                 else:
                     r[k] = v
-            c.execute("update repuestos set data=? where id=?", (json.dumps(r, ensure_ascii=False), rid))
+            filas.append((json.dumps(r, ensure_ascii=False), rid))
+        c.executemany("update repuestos set data=? where id=?", filas)
 
 
 def agregar_repuestos(lista: list[dict]) -> list[str]:
-    ids = []
+    ids, filas = [], []
     with _lock, conectar() as c:
         n = 0
-        for (d,) in c.execute("select data from repuestos"):
+        for (d,) in c.execute("select data from repuestos").fetchall():
             try:
                 n = max(n, int(json.loads(d).get("n") or 0))
             except (TypeError, ValueError):
                 pass
         for r in lista:
             n += 1
-            r = dict(r)
-            r["n"] = n
+            r = dict(r, n=n)
             rid = "r" + secrets.token_hex(6)
-            c.execute("insert into repuestos values(?,?)", (rid, json.dumps(r, ensure_ascii=False)))
+            filas.append((rid, json.dumps(r, ensure_ascii=False)))
             ids.append(rid)
+        c.executemany("insert into repuestos values(?,?)", filas)
     return ids
 
 
@@ -223,14 +298,14 @@ def config() -> dict:
 
 def set_config(**kw):
     with conectar() as c:
-        for k, v in kw.items():
-            c.execute("insert into config values(?,?) on conflict(key) do update set value=excluded.value", (k, v))
+        c.executemany("insert into config values(?,?) on conflict(key) do update set value=excluded.value",
+                      list(kw.items()))
 
 
 def _lista(tabla):
     with conectar() as c:
         return [dict(json.loads(d), id=i) for i, d in
-                c.execute(f"select id, data from {tabla} order by ts desc limit 100")]
+                c.execute(f"select id, data from {tabla} order by ts desc limit 100").fetchall()]
 
 
 def cargas() -> list[dict]:
@@ -243,7 +318,37 @@ def empaques() -> list[dict]:
 
 def _guardar(tabla, rid, doc):
     with conectar() as c:
-        c.execute(f"insert or replace into {tabla} values(?,?,?)", (rid, doc.get("ts"), json.dumps(doc, ensure_ascii=False)))
+        c.execute(f"insert into {tabla} values(?,?,?) on conflict(id) do update set ts=excluded.ts, data=excluded.data",
+                  (rid, doc.get("ts"), json.dumps(doc, ensure_ascii=False)))
+
+
+def exportar_respaldo() -> bytes:
+    """Respaldo completo (repuestos, cargas, listas de empaque y configuración) en JSON."""
+    with conectar() as c:
+        doc = {"formato": "tablero-backorder", "version": 1, "generado": dt.datetime.now().isoformat(timespec="seconds"),
+               "repuestos": {i: json.loads(d) for i, d in c.execute("select id, data from repuestos").fetchall()},
+               "cargas": [[i, ts, json.loads(d)] for i, ts, d in c.execute("select id, ts, data from cargas").fetchall()],
+               "empaques": [[i, ts, json.loads(d)] for i, ts, d in c.execute("select id, ts, data from empaques").fetchall()],
+               "config": dict(c.execute("select key, value from config").fetchall())}
+    return json.dumps(doc, ensure_ascii=False).encode("utf-8")
+
+
+def importar_respaldo(data: bytes) -> int:
+    """Carga un respaldo JSON (de exportar_respaldo) en una base vacía. Devuelve cuántos repuestos cargó."""
+    doc = json.loads(data.decode("utf-8-sig"))
+    if doc.get("formato") != "tablero-backorder":
+        raise ValueError("El archivo no es un respaldo del Tablero Backorder.")
+    with _lock, conectar() as c:
+        if c.execute("select count(*) from repuestos").fetchone()[0]:
+            raise ValueError("El tablero ya tiene datos; el respaldo solo se carga en un tablero vacío.")
+        c.executemany("insert into repuestos values(?,?)",
+                      [(i, json.dumps(r, ensure_ascii=False)) for i, r in doc["repuestos"].items()])
+        for tabla in ("cargas", "empaques"):
+            c.executemany(f"insert into {tabla} values(?,?,?) on conflict(id) do nothing",
+                          [(i, ts, json.dumps(d, ensure_ascii=False)) for i, ts, d in doc.get(tabla, [])])
+        c.executemany("insert into config values(?,?) on conflict(key) do update set value=excluded.value",
+                      list(doc.get("config", {}).items()))
+    return len(doc["repuestos"])
 
 
 # ------------------------------------------------------ estados y categorías

@@ -13,7 +13,20 @@ import streamlit as st
 import logica as L
 
 st.set_page_config(page_title="Tablero Backorder Yokomotor 173", page_icon="📦", layout="wide")
-L.iniciar_db()
+
+
+@st.cache_resource
+def _iniciar():
+    L.iniciar_db()
+    return True
+
+
+try:
+    _iniciar()
+except Exception as e:  # p. ej. clave de Supabase mal escrita
+    st.error("No se pudo conectar con la base de datos. Revisa DATABASE_URL en los secretos de la app "
+             f"(Settings → Secrets).\n\nDetalle: {type(e).__name__}: {e}")
+    st.stop()
 
 # ------------------------------------------------------------------ estilos
 st.markdown("""
@@ -51,6 +64,11 @@ def leer_configuracion() -> dict:
 
 
 CONF = leer_configuracion()
+try:  # en Streamlit Community Cloud la clave va en los secretos de la app
+    if st.secrets.get("CLAVE"):
+        CONF["CLAVE"] = str(st.secrets["CLAVE"])
+except Exception:
+    pass
 if CONF.get("CLAVE") and not st.session_state.get("ok"):
     st.title("Tablero Backorder · Yokomotor 173")
     clave = st.text_input("Clave de acceso", type="password")
@@ -72,9 +90,52 @@ def iso(d):
     return d.isoformat() if d else None
 
 
-rows = L.cargar_repuestos()
-cfg = L.config()
+# Los datos se guardan en memoria unos segundos para que la página responda rápido;
+# después de cada cambio se vuelven a leer (refrescar).
+@st.cache_data(ttl=20, show_spinner=False)
+def _rows():
+    return L.cargar_repuestos()
+
+
+@st.cache_data(ttl=20, show_spinner=False)
+def _cfg():
+    return L.config()
+
+
+@st.cache_data(ttl=60, show_spinner=False)
+def _historial():
+    return L.cargas(), L.empaques()
+
+
+def refrescar():
+    _rows.clear()
+    _cfg.clear()
+    _historial.clear()
+
+
+rows = _rows()
+cfg = _cfg()
 HOY = L.hoy()
+
+if not rows:
+    st.title("Tablero Backorder · Yokomotor 173")
+    st.info("El tablero está vacío. Si es la primera vez que lo abres, sube el archivo de datos inicial "
+            "(**backorder_datos.json**) o un respaldo descargado desde la pestaña Reportes.")
+    ini = st.file_uploader("Archivo de datos (.json)", type=["json"])
+    if ini and st.button("Cargar datos", type="primary"):
+        try:
+            n = L.importar_respaldo(ini.getvalue())
+            refrescar()
+            st.success(f"Se cargaron {n:,} repuestos.".replace(",", "."))
+            st.rerun()
+        except Exception as e:
+            st.error(f"No se pudo cargar el archivo: {e}")
+    if st.button("Empezar con el tablero vacío"):
+        L.agregar_repuestos([{"pedido": "", "ref": "EJEMPLO", "desc": "Repuesto de ejemplo, puedes borrarlo",
+                              "estado": "Pendiente", "fecha": HOY}])
+        refrescar()
+        st.rerun()
+    st.stop()
 for k in ("tabla_v", "up_v", "pk_v"):
     st.session_state.setdefault(k, 0)
 
@@ -200,6 +261,7 @@ def dlg_repuesto(rid: str | None, pre: dict | None = None):
             if pre:
                 v["agregado"] = pre.get("agregado")
             L.agregar_repuestos([{k: x for k, x in v.items() if x is not None}])
+        refrescar()
         st.session_state.e_init = None
         st.session_state.tabla_v += 1
         st.session_state.aviso = "Cambios guardados" if rid else "Repuesto agregado"
@@ -213,6 +275,7 @@ def dlg_repuesto(rid: str | None, pre: dict | None = None):
             if st.checkbox("Quiero eliminar este repuesto", key="e_borrar"):
                 if st.button("Sí, eliminar", type="secondary"):
                     L.borrar_repuesto(rid)
+                    refrescar()
                     st.session_state.e_init = None
                     st.session_state.tabla_v += 1
                     st.session_state.aviso = "Repuesto eliminado"
@@ -282,6 +345,17 @@ with tab_t:
                 continue
         lista.append((rid, r, em))
     lista.sort(key=lambda x: x[1].get("n") or 0)
+    # La tabla se muestra por páginas para que cada clic responda rápido
+    POR_PAG = 100
+    total_f = len(lista)
+    paginas = max(1, -(-total_f // POR_PAG))
+    filtro_id = (grupo, q, f_est, f_can, f_resp, solo_upd, solo_new)
+    if st.session_state.get("filtro_id") != filtro_id:
+        st.session_state.filtro_id = filtro_id
+        st.session_state.pagina = 1
+    st.session_state.pagina = min(max(1, st.session_state.get("pagina", 1)), paginas)
+    ini = (st.session_state.pagina - 1) * POR_PAG
+    lista = lista[ini:ini + POR_PAG]
 
     ids = [x[0] for x in lista]
     df = pd.DataFrame([{
@@ -328,11 +402,17 @@ with tab_t:
     def estilos(_):
         return css_df
 
-    st.caption(f"{nf(len(df))} repuestos · haz clic en una fila para editarla")
+    def _pag(d):
+        st.session_state.pagina += d
+        st.session_state.tabla_v += 1
+
+    rango = (f"{nf(ini + 1 if total_f else 0)}–{nf(ini + len(lista))} de {nf(total_f)} repuestos · "
+             f"página {st.session_state.pagina} de {paginas}")
+    st.caption(rango + " · haz clic en una fila para editarla")
     sel = st.dataframe(
         df.style.apply(estilos, axis=None).format(na_rep="", precision=0, thousands=""),
         hide_index=True,
-        width="stretch", height=620,
+        width="stretch", height=min(620, 38 + 35 * max(1, len(df))),
         on_select="rerun", selection_mode="single-row", key=f"tabla_{st.session_state.tabla_v}",
         column_config={
             "Descripción": st.column_config.TextColumn(width="medium"),
@@ -340,6 +420,12 @@ with tab_t:
             "#": st.column_config.NumberColumn(width="small", format="%d"),
 
         })
+    if paginas > 1:
+        p1, p2, p3 = st.columns([5, 1, 1])
+        p1.caption(rango)
+        p2.button("‹ Anterior", on_click=_pag, args=(-1,), disabled=st.session_state.pagina <= 1, width="stretch")
+        p3.button("Siguiente ›", on_click=_pag, args=(1,), disabled=st.session_state.pagina >= paginas,
+                  width="stretch")
     filas_sel = sel.selection.rows if sel and sel.selection else []
     if filas_sel and filas_sel[0] < len(ids):
         dlg_repuesto(ids[filas_sel[0]])
@@ -431,7 +517,9 @@ with tab_f:
                     st.error("Ningún pendiente coincide. Revisa que las columnas sean las correctas (el pedido de la "
                              "fábrica es Doc.ventas). No se puede aplicar una carga sin coincidencias.")
                 if st.button("Aplicar actualización", type="primary", disabled=not res["coinciden"]):
-                    doc = L.aplicar_carga(res, arch.name, modo)
+                    with st.spinner("Aplicando la actualización…"):
+                        doc = L.aplicar_carga(res, arch.name, modo)
+                    refrescar()
                     st.session_state.ultima_carga = doc
                     st.session_state.up_v += 1
                     st.session_state.tabla_v += 1
@@ -491,7 +579,7 @@ with tab_e:
             else:
                 st.markdown(f"### Lista de empaque {pk['entrega']}  \n{L.fmt_d(pk['fecha'])} · {pk['lineas']} líneas · "
                             f"{pk['unidades']} unidades")
-                if any(e.get("entrega") == pk["entrega"] for e in L.empaques()):
+                if any(e.get("entrega") == pk["entrega"] for e in _historial()[1]):
                     st.warning(f"Esta lista ({pk['entrega']}) ya se había registrado. Los repuestos que ya la tienen no "
                                "se vuelven a sumar.")
                 res = L.clasificar_empaque(rows, pk)
@@ -502,6 +590,7 @@ with tab_e:
                 if st.button(f"Registrar llegada de {por}" if por else "Nada por registrar", type="primary",
                              disabled=not por):
                     doc = L.registrar_empaque(rows, pk, res, pdf.name)
+                    refrescar()
                     st.session_state.ultimo_empaque = doc
                     st.session_state.pk_v += 1
                     st.session_state.tabla_v += 1
@@ -539,11 +628,22 @@ with tab_r:
     if st.session_state.get("xlsx_tab"):
         st.download_button("Descargar Excel", st.session_state.xlsx_tab, f"Backorder Yokomotor 173 - {HOY}.xlsx")
 
+    st.divider()
+    st.markdown("#### Respaldo completo")
+    st.caption("Guarda todo el tablero (repuestos, cargas y listas de empaque) en un archivo. Descárgalo una vez "
+               "por semana y guárdalo en tu computador: si algo le pasa a la base de datos, con este archivo se "
+               "recupera todo.")
+    if st.button("Preparar respaldo"):
+        st.session_state.resp = L.exportar_respaldo()
+    if st.session_state.get("resp"):
+        st.download_button("Descargar respaldo", st.session_state.resp, f"backorder_respaldo_{HOY}.json",
+                           mime="application/json")
+
 
 # ================================================================== Actualizaciones
 with tab_h:
     st.markdown("#### Listas de empaque")
-    emps = L.empaques()
+    cgs_hist, emps = _historial()
     if not emps:
         st.caption("Todavía no has subido listas de empaque.")
     for e in emps:
@@ -552,7 +652,7 @@ with tab_h:
                          f"{s.get('noBo', 0)} no son del BO · registrada {L.fmt_d(e.get('aplicada'))}"):
             mostrar_empaque(e, "hist_" + e["id"])
     st.markdown("#### Cargas del Excel de fábrica")
-    cgs = L.cargas()
+    cgs = cgs_hist
     if not cgs:
         st.caption("Todavía no hay actualizaciones.")
     for c in cgs:

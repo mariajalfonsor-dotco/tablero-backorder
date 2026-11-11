@@ -301,10 +301,15 @@ with tab_t:
                "Revisar": "Revisar (no aparece en fábrica)"}
     f_est = f2.selectbox("Estado", est_op, format_func=lambda x: est_lab.get(x, x), label_visibility="collapsed")
     canales = sorted({r.get("canal") for r in rows.values() if r.get("canal")})
-    f_can = f3.selectbox("Canal", [""] + canales, format_func=lambda x: x or "Todos los canales",
+    VACIO = "__vacio__"
+    f_can = f3.selectbox("Canal", ["", VACIO] + canales,
+                         format_func=lambda x: "Todos los canales" if not x else
+                         ("Vacío (sin canal)" if x == VACIO else x),
                          label_visibility="collapsed")
     resps = sorted({r.get("resp") for r in rows.values() if r.get("resp")})
-    f_resp = f4.selectbox("Responsable", [""] + resps, format_func=lambda x: x or "Todos los responsables",
+    f_resp = f4.selectbox("Responsable", ["", VACIO] + resps,
+                          format_func=lambda x: "Todos los responsables" if not x else
+                          ("Vacío (sin responsable)" if x == VACIO else x),
                           label_visibility="collapsed")
     if f5.button("＋ Nuevo repuesto", width="stretch"):
         st.session_state.e_init = None
@@ -346,9 +351,15 @@ with tab_t:
                 continue
         elif f_est and not em.startswith(f_est):
             continue
-        if f_can and r.get("canal") != f_can:
+        if f_can == VACIO:
+            if str(r.get("canal") or "").strip():
+                continue
+        elif f_can and r.get("canal") != f_can:
             continue
-        if f_resp and r.get("resp") != f_resp:
+        if f_resp == VACIO:
+            if str(r.get("resp") or "").strip():
+                continue
+        elif f_resp and r.get("resp") != f_resp:
             continue
         if solo_upd and not L.campos_actualizados(r, cfg):
             continue

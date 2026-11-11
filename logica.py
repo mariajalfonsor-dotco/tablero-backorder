@@ -548,6 +548,40 @@ def comparar_fabrica(rows: dict[str, dict], aoa, header: int, mapa: dict, modo: 
             "faltantes": faltantes, "nuevos": nuevos, "patch": patch, "desconocidos": sorted(desconocidos)[:8]}
 
 
+CAMPOS_PEDIDO = ("cliente", "canal", "resp")
+
+
+def datos_por_pedido(rows: dict[str, dict]) -> dict[str, dict]:
+    """Para cada pedido, el cliente/canal/responsable cuando todas sus filas coinciden (un solo valor)."""
+    vals: dict[str, dict[str, set]] = {}
+    for r in rows.values():
+        p = norm_ped(r.get("pedido"))
+        if not p:
+            continue
+        for k in CAMPOS_PEDIDO:
+            v = str(r.get(k) or "").strip()
+            if v:
+                vals.setdefault(p, {}).setdefault(k, set()).add(v)
+    return {p: {k: next(iter(s)) for k, s in d.items() if len(s) == 1} for p, d in vals.items()}
+
+
+def completar_fila(r: dict, por_pedido: dict) -> dict:
+    """Campos vacíos de cliente/canal/responsable que se pueden copiar de otra fila del mismo pedido."""
+    conocidos = por_pedido.get(norm_ped(r.get("pedido")), {})
+    return {k: conocidos[k] for k in CAMPOS_PEDIDO if not str(r.get(k) or "").strip() and k in conocidos}
+
+
+def completar_desde_pedidos(rows: dict[str, dict]) -> dict[str, dict]:
+    """Patch para todas las filas a las que les falta cliente/canal/responsable y su pedido lo tiene en otra fila."""
+    pp = datos_por_pedido(rows)
+    patch = {}
+    for rid, r in rows.items():
+        f = completar_fila(r, pp)
+        if f:
+            patch[rid] = f
+    return patch
+
+
 def fila_nueva_desde_fabrica(x: dict) -> dict:
     return {"pedido": str(x.get("pedido") or ""), "fecha": x.get("fecha"), "ref": str(x.get("ref") or ""),
             "desc": x.get("desc") or "", "cant": x.get("cant"), "cantFab": x.get("cant"), "eta": x.get("eta"),
@@ -555,10 +589,16 @@ def fila_nueva_desde_fabrica(x: dict) -> dict:
             "nota": "", "llegada": None, "agregado": hoy()}
 
 
-def aplicar_carga(res: dict, archivo: str, modo: str) -> dict:
+def aplicar_carga(res: dict, archivo: str, modo: str, rows: dict | None = None) -> dict:
     guardar_cambios(res["patch"])
     if res["nuevos"]:
-        agregar_repuestos([fila_nueva_desde_fabrica(x) for x in res["nuevos"]])
+        pp = datos_por_pedido(rows or {})
+        nuevas = []
+        for x in res["nuevos"]:
+            f = fila_nueva_desde_fabrica(x)
+            f.update(completar_fila(f, pp))  # cliente/canal/responsable del mismo pedido
+            nuevas.append(f)
+        agregar_repuestos(nuevas)
     ts = dt.datetime.now().isoformat(timespec="seconds")
     n = lambda k: sum(1 for c in res["cambios"] if c["campo"] == k)
     doc = {"ts": ts, "fecha": hoy(), "archivo": archivo, "modo": modo,

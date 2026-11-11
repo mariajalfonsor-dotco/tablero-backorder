@@ -255,6 +255,8 @@ def dlg_repuesto(rid: str | None, pre: dict | None = None):
             v["sinEtd"] = False if (v["eta"] and v["eta"] != r.get("eta")) else bool(r.get("sinEtd"))
         else:
             v["sinEtd"] = bool(pre and pre.get("sinEtd")) and not v["eta"]
+        # Si faltan cliente/canal/responsable y el pedido ya existe en otra fila, se copian de ahí
+        v.update(L.completar_fila(v, L.datos_por_pedido({k: x for k, x in rows.items() if k != rid})))
         if rid:
             L.guardar_cambios({rid: v})
         else:
@@ -307,6 +309,19 @@ with tab_t:
     if f5.button("＋ Nuevo repuesto", width="stretch"):
         st.session_state.e_init = None
         dlg_repuesto(None)
+
+    completar = L.completar_desde_pedidos(rows)
+    if completar:
+        b1, b2 = st.columns([5, 1.4])
+        b1.info(f"**{nf(len(completar))} repuestos** no tienen cliente, canal o responsable, pero su mismo pedido ya "
+                "los tiene en otra fila. Se pueden completar automáticamente (solo cuando todas las filas del pedido "
+                "coinciden).")
+        if b2.button("Completar datos", type="primary", width="stretch"):
+            L.guardar_cambios(completar)
+            refrescar()
+            st.session_state.tabla_v += 1
+            st.session_state.aviso = f"Se completaron {nf(len(completar))} repuestos"
+            st.rerun()
 
     n_upd = sum(1 for r in rows.values() if L.campos_actualizados(r, cfg))
     n_new = sum(1 for r in rows.values() if L.es_nuevo(r, cfg))
@@ -538,7 +553,7 @@ with tab_f:
                          "fábrica es Doc.ventas). No se puede aplicar una carga sin coincidencias.")
             if st.button("Aplicar actualización", type="primary", disabled=not res["coinciden"]):
                 with st.spinner("Aplicando la actualización…"):
-                    doc = L.aplicar_carga(res, " + ".join(nombres_arch), modo)
+                    doc = L.aplicar_carga(res, " + ".join(nombres_arch), modo, rows)
                 refrescar()
                 st.session_state.ultima_carga = doc
                 st.session_state.up_v += 1

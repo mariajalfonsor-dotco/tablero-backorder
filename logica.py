@@ -448,6 +448,21 @@ def adivinar_columnas(encabezados) -> dict[str, int]:
     return mapa
 
 
+def unir_excels(partes):
+    """Une varios Excel de fábrica (p. ej. sede 173 y Colisión) en una sola tabla.
+
+    partes: lista de (filas, fila_encabezado, mapa_de_columnas) de cada archivo.
+    Devuelve (filas_unidas, 0, mapa) listo para comparar_fabrica.
+    """
+    claves = [k for k, _, _ in FIELDS]
+    out = [claves[:]]
+    for aoa, hd, mapa in partes:
+        for row in aoa[hd + 1:]:
+            out.append([row[mapa[k]] if mapa.get(k, -1) >= 0 and mapa[k] < len(row) else None for k in claves])
+    mapa_u = {k: (i if any(m.get(k, -1) >= 0 for _, _, m in partes) else -1) for i, k in enumerate(claves)}
+    return out, 0, mapa_u
+
+
 def comparar_fabrica(rows: dict[str, dict], aoa, header: int, mapa: dict, modo: str = "pr") -> dict:
     """Compara los pendientes del tablero con el Excel de fábrica. No guarda nada."""
     hoy_iso = hoy()

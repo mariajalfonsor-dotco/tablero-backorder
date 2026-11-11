@@ -461,69 +461,89 @@ with tab_f:
     if st.session_state.get("ultima_carga"):
         st.success("Tablero actualizado con el Excel de fábrica.")
         mostrar_carga(st.session_state.ultima_carga, "ult")
-        if st.button("Subir otro archivo"):
+        if st.button("Subir otros archivos"):
             st.session_state.ultima_carga = None
             st.rerun()
     else:
-        st.write("Sube el Excel que envía la fábrica. Se comparan los repuestos **Pendiente** y **Parcial** por "
-                 "**pedido + referencia**: se actualizan ETA (ETA_DEALER), cantidad de fábrica y estado; los que no "
-                 "aparecen quedan en **Revisar**, y los repuestos de la fábrica que no están en el tablero se "
-                 "**agregan solos** como Pendiente.")
-        arch = st.file_uploader("Excel de fábrica", type=["xlsx", "xls", "xlsm", "csv"], key=f"up_{st.session_state.up_v}")
-        hojas = None
-        if arch:
+        st.write("Sube **los Excel que envía la fábrica: el de la sede 173 y el de Colisión, juntos**. Se comparan "
+                 "los repuestos **Pendiente** y **Parcial** contra los dos archivos a la vez, por **pedido + referencia**: "
+                 "se actualizan ETA (ETA_DEALER), cantidad de fábrica y estado; los que no aparecen en ninguno quedan "
+                 "en **Revisar**, y los repuestos de la fábrica que no están en el tablero se **agregan solos** como Pendiente.")
+        archs = st.file_uploader("Excel de fábrica (puedes seleccionar los dos archivos a la vez)",
+                                 type=["xlsx", "xls", "xlsm", "csv"], accept_multiple_files=True,
+                                 key=f"up_{st.session_state.up_v}")
+        partes, nombres_arch, error = [], [], False
+        for n_a, arch in enumerate(archs or []):
             try:
                 hojas = L.leer_excel(arch)
             except Exception:
-                st.error("No se pudo leer ese archivo. Revisa que sea un Excel (.xlsx o .xls) y vuelve a intentarlo.")
-        if hojas:
-            c1, c2, c3 = st.columns(3)
-            hoja = c1.selectbox("Hoja", list(hojas))
-            aoa = hojas[hoja]
-            hd = c2.number_input("Fila de encabezados", 1, max(1, len(aoa)), L.detectar_encabezado(aoa) + 1) - 1
-            enc = aoa[hd] if aoa else []
-            guess = L.adivinar_columnas(enc)
-            nombres = ["— No usar —"] + [str(c or f"(Columna {i + 1})").strip() for i, c in enumerate(enc)]
-            st.markdown("**¿Qué columna es cada dato?**")
-            cols = st.columns(4)
-            mapa = {}
-            for i, (k, lab, _) in enumerate(L.FIELDS):
-                sel_i = cols[i % 4].selectbox(lab, range(len(nombres)), index=guess[k] + 1,
-                                              format_func=lambda j: nombres[j], key=f"map_{k}_{hoja}_{hd}")
-                mapa[k] = sel_i - 1
-            modo = c3.selectbox("Comparar por", ["pr", "r"], index=0 if mapa["pedido"] >= 0 else 1,
-                                format_func=lambda m: "Pedido + referencia" if m == "pr" else "Solo referencia")
+                st.error(f"No se pudo leer «{arch.name}». Revisa que sea un Excel (.xlsx o .xls).")
+                error = True
+                continue
+            hoja0 = list(hojas)[0]
+            aoa0 = hojas[hoja0]
+            hd0 = L.detectar_encabezado(aoa0)
+            guess0 = L.adivinar_columnas(aoa0[hd0] if aoa0 else [])
+            faltan = [lab for k, lab, _ in L.FIELDS if k in ("ref", "pedido", "eta") and guess0[k] < 0]
+            with st.expander(f"Archivo {n_a + 1}: {arch.name}" + (" — revisa las columnas" if faltan else
+                             " — columnas reconocidas"), expanded=bool(faltan)):
+                c1, c2 = st.columns(2)
+                hoja = c1.selectbox("Hoja", list(hojas), key=f"hoja_{n_a}_{arch.name}")
+                aoa = hojas[hoja]
+                hd = c2.number_input("Fila de encabezados", 1, max(1, len(aoa)), L.detectar_encabezado(aoa) + 1,
+                                     key=f"hd_{n_a}_{arch.name}_{hoja}") - 1
+                enc = aoa[hd] if aoa else []
+                guess = L.adivinar_columnas(enc)
+                nombres = ["— No usar —"] + [str(c or f"(Columna {i + 1})").strip() for i, c in enumerate(enc)]
+                cols = st.columns(4)
+                mapa = {}
+                for i, (k, lab, _) in enumerate(L.FIELDS):
+                    sel_i = cols[i % 4].selectbox(lab, range(len(nombres)), index=guess[k] + 1,
+                                                  format_func=lambda j, nombres=nombres: nombres[j],
+                                                  key=f"map_{n_a}_{arch.name}_{k}_{hoja}_{hd}")
+                    mapa[k] = sel_i - 1
             if mapa["ref"] < 0:
-                st.error("Elige la columna de la referencia para poder comparar.")
-            else:
-                res = L.comparar_fabrica(rows, aoa, hd, mapa, modo)
-                st.markdown("#### Vista previa")
-                m = st.columns(6)
-                m[0].metric("En el Excel de fábrica", res["en_fabrica"])
-                m[1].metric("Pendientes que aparecen", res["coinciden"])
-                m[2].metric("Pendientes que NO aparecen", len(res["faltantes"]))
-                m[3].metric("ETAs que cambian", sum(1 for c in res["cambios"] if c["campo"] == "ETA"))
-                m[4].metric("Cant. fábrica que cambian", sum(1 for c in res["cambios"] if c["campo"] == "Cant. fábrica"))
-                m[5].metric("Nuevos que se agregan", len(res["nuevos"]))
-                if res["sin_eta"]:
-                    st.info(f"{res['sin_eta']} pendientes aparecen en la fábrica sin fecha (por ejemplo “PEDIDO SIN ETD”); "
-                            "quedan en el grupo “Sin ETD”.")
-                if res["desconocidos"]:
-                    st.info("Estos estados de la fábrica no se reconocieron y no cambian nada: " + ", ".join(res["desconocidos"]))
-                if modo == "r":
-                    st.warning("Comparando solo por referencia: si una referencia está en varios pedidos, todos reciben "
-                               "la misma ETA y cantidad.")
-                if not res["coinciden"]:
-                    st.error("Ningún pendiente coincide. Revisa que las columnas sean las correctas (el pedido de la "
-                             "fábrica es Doc.ventas). No se puede aplicar una carga sin coincidencias.")
-                if st.button("Aplicar actualización", type="primary", disabled=not res["coinciden"]):
-                    with st.spinner("Aplicando la actualización…"):
-                        doc = L.aplicar_carga(res, arch.name, modo)
-                    refrescar()
-                    st.session_state.ultima_carga = doc
-                    st.session_state.up_v += 1
-                    st.session_state.tabla_v += 1
-                    st.rerun()
+                st.error(f"En «{arch.name}» elige la columna de la referencia para poder comparar.")
+                error = True
+                continue
+            partes.append((aoa, hd, mapa))
+            nombres_arch.append(arch.name)
+        if partes and not error:
+            aoa_u, hd_u, mapa_u = L.unir_excels(partes)
+            todos_pedido = all(m["pedido"] >= 0 for _, _, m in partes)
+            modo = st.selectbox("Comparar por", ["pr", "r"], index=0 if todos_pedido else 1,
+                                format_func=lambda m: "Pedido + referencia" if m == "pr" else "Solo referencia")
+            if len(partes) == 1:
+                st.warning("Subiste un solo archivo. Si esta semana llegaron el de la sede 173 y el de Colisión, "
+                           "súbelos **juntos**: si subes solo uno, los repuestos que están en el otro quedarán en Revisar.")
+            res = L.comparar_fabrica(rows, aoa_u, hd_u, mapa_u, modo)
+            st.markdown("#### Vista previa" + (f" (los {len(partes)} archivos juntos)" if len(partes) > 1 else ""))
+            m = st.columns(6)
+            m[0].metric("En los Excel de fábrica", res["en_fabrica"])
+            m[1].metric("Pendientes que aparecen", res["coinciden"])
+            m[2].metric("Pendientes que NO aparecen", len(res["faltantes"]))
+            m[3].metric("ETAs que cambian", sum(1 for c in res["cambios"] if c["campo"] == "ETA"))
+            m[4].metric("Cant. fábrica que cambian", sum(1 for c in res["cambios"] if c["campo"] == "Cant. fábrica"))
+            m[5].metric("Nuevos que se agregan", len(res["nuevos"]))
+            if res["sin_eta"]:
+                st.info(f"{res['sin_eta']} pendientes aparecen en la fábrica sin fecha (por ejemplo “PEDIDO SIN ETD”); "
+                        "quedan en el grupo “Sin ETD”.")
+            if res["desconocidos"]:
+                st.info("Estos estados de la fábrica no se reconocieron y no cambian nada: " + ", ".join(res["desconocidos"]))
+            if modo == "r":
+                st.warning("Comparando solo por referencia: si una referencia está en varios pedidos, todos reciben "
+                           "la misma ETA y cantidad.")
+            if not res["coinciden"]:
+                st.error("Ningún pendiente coincide. Revisa que las columnas sean las correctas (el pedido de la "
+                         "fábrica es Doc.ventas). No se puede aplicar una carga sin coincidencias.")
+            if st.button("Aplicar actualización", type="primary", disabled=not res["coinciden"]):
+                with st.spinner("Aplicando la actualización…"):
+                    doc = L.aplicar_carga(res, " + ".join(nombres_arch), modo)
+                refrescar()
+                st.session_state.ultima_carga = doc
+                st.session_state.up_v += 1
+                st.session_state.tabla_v += 1
+                st.rerun()
 
 
 # ================================================================== Lista de empaque

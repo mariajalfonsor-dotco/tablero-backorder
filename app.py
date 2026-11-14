@@ -43,9 +43,13 @@ h1{font-size:1.9rem!important;text-transform:uppercase;letter-spacing:.01em;marg
 .sw{display:inline-block;width:12px;height:12px;border-radius:3px;vertical-align:-1px;margin-right:5px}
 </style>""", unsafe_allow_html=True)
 
-TINTE = {"mostrador": "#d6e2fb", "mecanica": "#fbefc4", "colision": "#f8d3e5", "boutique": "#cdeeea", "otro": "#eceef1"}
-CHIP = {"mostrador": "#1d5fe0", "mecanica": "#b38600", "colision": "#d6197a", "boutique": "#0c9a8f", "otro": "#5d6573"}
-NUEVO_BG, UPD_BG = "#e6dcfa", "#c5ecd4"
+# Colores por canal según los parámetros de la empresa:
+# Colisión azul · Boutique gris · Mostrador verde · Repuestos Stock Almacén blanco · Mecánica rojo
+TINTE = {"colision": "#d4e3f8", "boutique": "#e4e6e9", "mostrador": "#d6efd9", "stock": "#ffffff",
+         "mecanica": "#f8d4d4", "otro": ""}
+CHIP = {"colision": "#2463c4", "boutique": "#8c9199", "mostrador": "#2e9e46", "stock": "#ffffff",
+        "mecanica": "#d32f2f", "otro": "#5d6573"}
+NUEVO_BG, UPD_BG = "#e6dcfa", "#ffe98a"  # nuevos morado, actualizados por fábrica amarillo
 EST_COLOR = {"Alerta": "#b42318", "Revisar": "#a15c00", "Sin ETD": "#2f5aa8", "Llegó": "#1f7a4d",
              "Parcial": "#2f5aa8", "Cancelado": "#7a7a7a", "Pendiente": "#a15c00"}
 ENVIOS = {"": "Sin calcular", "28": "Aéreo (28 días)", "66": "Marítimo (66 días)"}
@@ -175,10 +179,8 @@ tab_t, tab_f, tab_e, tab_r, tab_h = st.tabs(["Tablero", "Subir Excel de fábrica
 
 # ================================================================== edición
 def _calc_eta():
-    n = st.session_state.get("e_envio")
-    if n:
-        base = st.session_state.get("e_fecha") or dt.date.today()
-        st.session_state.e_eta = base + dt.timedelta(days=int(n))
+    """La ETA calculada se muestra aparte; ya no reemplaza la ETA de Toyota."""
+    return None
 
 
 @st.dialog("Repuesto", width="large")
@@ -211,12 +213,13 @@ def dlg_repuesto(rid: str | None, pre: dict | None = None):
     c1, c2, c3, c4 = st.columns(4)
     c1.number_input("Cantidad fábrica", key="e_cantFab", min_value=0.0, step=1.0, format="%g")
     c2.selectbox("Tipo de envío", list(ENVIOS), format_func=ENVIOS.get, key="e_envio", on_change=_calc_eta)
-    c3.date_input("ETA", key="e_eta", format="DD/MM/YYYY", min_value=dt.date(2015, 1, 1))
+    c3.date_input("ETA Toyota (fábrica)", key="e_eta", format="DD/MM/YYYY", min_value=dt.date(2015, 1, 1))
     c4.date_input("Fecha real llegada", key="e_llegada", format="DD/MM/YYYY", min_value=dt.date(2015, 1, 1))
     if st.session_state.e_envio:
         base = st.session_state.e_fecha or dt.date.today()
-        st.caption(f"ETA calculada: {base:%d/%m/%Y} + {st.session_state.e_envio} días = "
-                   f"{base + dt.timedelta(days=int(st.session_state.e_envio)):%d/%m/%Y} (días calendario)")
+        st.info(f"**ETA calculada:** {base + dt.timedelta(days=int(st.session_state.e_envio)):%d/%m/%Y}  "
+                f"(fecha de pedido {base:%d/%m/%Y} + {st.session_state.e_envio} días calendario). "
+                "Se muestra en su propia columna; la ETA de Toyota no cambia.")
     canales = sorted(set(L.CANALES_BASE) | {x.get("canal") for x in rows.values() if x.get("canal")})
     if st.session_state.e_canal and st.session_state.e_canal not in canales:
         canales.append(st.session_state.e_canal)
@@ -300,7 +303,7 @@ with tab_t:
     est_lab = {"": "Todos los estados", "backorder": "Backorder (Pendiente + Parcial)", "Alerta": "Alerta (ETA vencida)",
                "Revisar": "Revisar (no aparece en fábrica)"}
     f_est = f2.selectbox("Estado", est_op, format_func=lambda x: est_lab.get(x, x), label_visibility="collapsed")
-    canales = sorted({r.get("canal") for r in rows.values() if r.get("canal")})
+    canales = sorted(set(L.CANALES_BASE) | {r.get("canal") for r in rows.values() if r.get("canal")})
     VACIO = "__vacio__"
     f_can = f3.selectbox("Canal", ["", VACIO] + canales,
                          format_func=lambda x: "Todos los canales" if not x else
@@ -334,8 +337,8 @@ with tab_t:
     solo_upd = g1.checkbox("Solo actualizados", disabled=not n_upd)
     solo_new = g2.checkbox("Solo nuevos", disabled=not n_new)
     g3.markdown(
-        f"<div class='leyenda'><span><span class='sw' style='background:{UPD_BG};border:1px solid #1f7a4d'></span>"
-        f"Verde: {nf(n_upd)} pedidos existentes actualizados en la carga del {L.fmt_d(cfg.get('actualizado'))}</span>"
+        f"<div class='leyenda'><span><span class='sw' style='background:{UPD_BG};border:1px solid #9a7400'></span>"
+        f"Amarillo: {nf(n_upd)} pedidos existentes actualizados en la carga del {L.fmt_d(cfg.get('actualizado'))}</span>"
         f"<span><span class='sw' style='background:{NUEVO_BG};border:1px solid #6d3fc0'></span>"
         f"Morado: {nf(n_new)} repuestos nuevos desde la fábrica</span></div>", unsafe_allow_html=True)
 
@@ -387,32 +390,35 @@ with tab_t:
     df = pd.DataFrame([{
         "#": r.get("n"), "Pedido": r.get("pedido"), "Fecha pedido": fecha(r.get("fecha")), "Referencia": r.get("ref"),
         "Descripción": r.get("desc"), "Cant. pedida": r.get("cant"), "Cant. fábrica": r.get("cantFab"),
-        "ETA": fecha(r.get("eta")), "Canal": r.get("canal") or "", "Cliente": r.get("cliente"),
+        "ETA Toyota": fecha(r.get("eta")), "ETA calculada": fecha(L.eta_calculada(r)), "Canal": r.get("canal") or "", "Cliente": r.get("cliente"),
         "Responsable": r.get("resp"), "Llegada": fecha(r.get("llegada")),
         "Lead time": L.lead_time(r.get("fecha"), r.get("llegada")), "Estado": em} for _, r, em in lista],
-        columns=["#", "Pedido", "Fecha pedido", "Referencia", "Descripción", "Cant. pedida", "Cant. fábrica", "ETA",
+        columns=["#", "Pedido", "Fecha pedido", "Referencia", "Descripción", "Cant. pedida", "Cant. fábrica", "ETA Toyota", "ETA calculada",
                  "Canal", "Cliente", "Responsable", "Llegada", "Lead time", "Estado"])
-    for col in ("Fecha pedido", "ETA", "Llegada"):
+    for col in ("Fecha pedido", "ETA Toyota", "ETA calculada", "Llegada"):
         df[col] = [d.strftime("%d/%m/%Y") if d else "" for d in df[col]]
     for col in ("Cant. pedida", "Cant. fábrica", "Lead time"):
         df[col] = [("" if v is None or v != v else f"{v:g}") for v in df[col]]
 
     COLS = list(df.columns)
-    i_canal, i_eta, i_cf, i_est = (COLS.index(c) for c in ("Canal", "ETA", "Cant. fábrica", "Estado"))
-    UPD_CSS = f"background-color:{UPD_BG};color:#1f7a4d;font-weight:700"
+    i_canal, i_eta, i_cf, i_est = (COLS.index(c) for c in ("Canal", "ETA Toyota", "Cant. fábrica", "Estado"))
+    i_etac = COLS.index("ETA calculada")
+    UPD_CSS = f"background-color:{UPD_BG};color:#6b4f00;font-weight:700;border:1px solid #c9a200"
     matriz = []
     for _, r, em in lista:
         k = L.canal_key(r.get("canal")) if r.get("canal") else None
-        bg = NUEVO_BG if L.es_nuevo(r, cfg) else (TINTE[k] if k else "")
+        bg = NUEVO_BG if L.es_nuevo(r, cfg) else (TINTE.get(k, "") if k else "")
         fila = f"background-color:{bg};" if bg else ""
         f = [fila] * len(COLS)
         if k:
-            f[i_canal] = f"background-color:{CHIP[k]};color:{'#1b1b1b' if k == 'mecanica' else '#fff'};font-weight:700"
+            f[i_canal] = (f"background-color:{CHIP[k]};color:#fff;font-weight:700" if k != "stock" else
+                          "background-color:#fff;color:#16191f;font-weight:700;border:1px solid #16191f")
         c = L.cat(r, HOY)
         if c == "vencida":
             f[i_eta] = fila + "color:#b42318;font-weight:700"
         elif c == "revisar":
             f[i_eta] = fila + "color:#8a8f99;text-decoration:line-through"
+        f[i_etac] = fila + "color:#2f5aa8;font-style:italic"
         colr = next((v for kk, v in EST_COLOR.items() if em.startswith(kk)), "#16191f")
         f[i_est] = fila + f"color:{colr};font-weight:700"
         upd = L.campos_actualizados(r, cfg)

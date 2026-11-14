@@ -21,7 +21,7 @@ BASE = Path(__file__).resolve().parent
 DB_PATH = BASE / "datos" / "backorder.db"
 OPEN = {"Pendiente", "Parcial"}
 ESTADOS = ["Pendiente", "Parcial", "Llegó", "Cancelado"]
-CANALES_BASE = ["Colisión", "Mecanica", "Mostrador", "Boutique"]
+CANALES_BASE = ["Colisión", "Mecanica", "Mostrador", "Boutique", "Stock"]
 CAMPOS = ["pedido", "fecha", "ref", "desc", "cant", "cantFab", "envio", "eta", "canal",
           "cliente", "resp", "llegada", "estado", "nota"]
 _lock = threading.Lock()
@@ -113,6 +113,17 @@ def map_estado(v):
     if "pend" in s or "backorder" in s or s == "bo" or "b/o" in s:
         return "Pendiente"
     return None
+
+
+def eta_calculada(r: dict):
+    """ETA calculada = fecha de pedido + días del tipo de envío (28 aéreo, 66 marítimo). None si falta alguno."""
+    try:
+        dias = int(r.get("envio") or 0)
+    except (TypeError, ValueError):
+        return None
+    if not dias or not r.get("fecha"):
+        return None
+    return sumar_dias(str(r["fecha"])[:10], dias)
 
 
 def lead_time(a, b):
@@ -392,6 +403,8 @@ def campos_actualizados(r: dict, cfg: dict) -> list[str]:
 
 def canal_key(c) -> str:
     k = re.sub(r"[^a-z]", "", fold(c))
+    if k.startswith("stock") or "almacen" in k:
+        return "stock"
     return k if k in ("mostrador", "mecanica", "colision", "boutique") else "otro"
 
 
@@ -755,13 +768,13 @@ def _xlsx(hojas: dict[str, tuple[list[str], list[list]]]) -> bytes:
 
 
 def excel_tablero(rows: dict[str, dict]) -> bytes:
-    head = ["#", "PEDIDO", "FECHA PEDIDO", "REFERENCIA", "DESCRIPCIÓN", "CANTIDAD", "CANT. FÁBRICA", "ETA",
+    head = ["#", "PEDIDO", "FECHA PEDIDO", "REFERENCIA", "DESCRIPCIÓN", "CANTIDAD", "CANT. FÁBRICA", "ETA TOYOTA", "ETA CALCULADA",
             "CANAL", "CLIENTE", "RESPONSABLE", "FECHA REAL LLEGADA", "LEAD TIME", "ESTADO", "NOTA"]
     filas = []
     for r in sorted(rows.values(), key=lambda r: r.get("n") or 0):
         lt = lead_time(r.get("fecha"), r.get("llegada"))
         filas.append([r.get("n"), r.get("pedido"), r.get("fecha"), r.get("ref"), r.get("desc"), r.get("cant"),
-                      r.get("cantFab"), r.get("eta"), r.get("canal"), r.get("cliente"), r.get("resp"),
+                      r.get("cantFab"), r.get("eta"), eta_calculada(r), r.get("canal"), r.get("cliente"), r.get("resp"),
                       r.get("llegada"), "-" if lt is None else lt, estado_mostrado(r), r.get("nota") or ""])
     return _xlsx({"Tablero": (head, filas)})
 
@@ -798,8 +811,8 @@ def excel_empaque(doc: dict) -> bytes:
 
 
 # ------------------------------------------------------ Reporte por canal (PDF)
-CANAL_RGB = {"mostrador": (29, 95, 224), "mecanica": (224, 168, 0), "colision": (214, 25, 122),
-             "boutique": (12, 154, 143), "otro": (93, 101, 115)}
+CANAL_RGB = {"colision": (36, 99, 196), "boutique": (140, 145, 153), "mostrador": (46, 158, 70),
+             "stock": (255, 255, 255), "mecanica": (211, 47, 47), "otro": (93, 101, 115)}
 
 
 def canal_nombre(r) -> str:
@@ -850,7 +863,7 @@ def pdf_canal(rows, canal: str, alcance: str, actualizado: str | None) -> bytes:
         primero = False
         k = "otro" if c == "Sin canal" else canal_key(c)
         rgb = colors.Color(*(v / 255 for v in CANAL_RGB[k]))
-        tinta = colors.Color(0.1, 0.1, 0.1) if k == "mecanica" else colors.white
+        tinta = colors.Color(0.1, 0.1, 0.1) if k == "stock" else colors.white
         tit = ParagraphStyle("t", fontName="Helvetica-Bold", fontSize=17, textColor=tinta, leading=20)
         sub = ParagraphStyle("s", fontName="Helvetica", fontSize=8.5, textColor=tinta, leading=11)
         banda = Table([[Paragraph(f"Backorder Yokomotor 173 · Canal {c}", tit)],
@@ -874,7 +887,7 @@ def pdf_canal(rows, canal: str, alcance: str, actualizado: str | None) -> bytes:
         st = Table([num, lab], colWidths=[118] * len(resumen), hAlign="LEFT")
         st.setStyle(TableStyle([("LEFTPADDING", (0, 0), (-1, -1), 0), ("BOTTOMPADDING", (0, 0), (-1, -1), 1)]))
         story += [st, Spacer(1, 10)]
-        head = ["Pedido", "Fecha pedido", "Referencia", "Descripción", "Cant.", "Cant. fáb.", "ETA", "Cliente",
+        head = ["Pedido", "Fecha pedido", "Referencia", "Descripción", "Cant.", "Cant. fáb.", "ETA Toyota", "ETA calc.", "Cliente",
                 "Responsable", "Estado"]
         data = [head]
         estilos = []
@@ -883,18 +896,20 @@ def pdf_canal(rows, canal: str, alcance: str, actualizado: str | None) -> bytes:
             eta = "Sin ETD" if cat(r) == "sinetd" else fmt_d(r.get("eta"))
             data.append([r.get("pedido") or "", fmt_d(r.get("fecha")), r.get("ref") or "",
                          Paragraph(str(r.get("desc") or ""), cel), "" if r.get("cant") is None else r.get("cant"),
-                         "" if r.get("cantFab") is None else r.get("cantFab"), eta,
+                         "" if r.get("cantFab") is None else r.get("cantFab"), eta, fmt_d(eta_calculada(r)),
                          Paragraph(str(r.get("cliente") or ""), cel), Paragraph(str(r.get("resp") or ""), cel), em])
             colr = next((v for k2, v in est_color.items() if em.startswith(k2)), None)
             if colr:
-                estilos.append(("TEXTCOLOR", (9, i), (9, i), colors.Color(*(v / 255 for v in colr))))
+                estilos.append(("TEXTCOLOR", (10, i), (10, i), colors.Color(*(v / 255 for v in colr))))
             if eta == "Sin ETD":
                 estilos.append(("TEXTCOLOR", (6, i), (6, i), colors.Color(47 / 255, 90 / 255, 168 / 255)))
-        t = Table(data, colWidths=[48, 56, 80, 175, 32, 42, 54, 130, 92, 77], repeatRows=1)
+        t = Table(data, colWidths=[46, 54, 78, 150, 30, 40, 52, 52, 118, 88, 76], repeatRows=1)
         t.setStyle(TableStyle([
             ("BACKGROUND", (0, 0), (-1, 0), rgb), ("TEXTCOLOR", (0, 0), (-1, 0), tinta),
             ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"), ("FONTSIZE", (0, 0), (-1, -1), 7.3),
-            ("FONTNAME", (2, 1), (2, -1), "Helvetica-Bold"), ("FONTNAME", (9, 1), (9, -1), "Helvetica-Bold"),
+            ("FONTNAME", (2, 1), (2, -1), "Helvetica-Bold"), ("FONTNAME", (10, 1), (10, -1), "Helvetica-Bold"),
+            ("TEXTCOLOR", (7, 1), (7, -1), colors.Color(47 / 255, 90 / 255, 168 / 255)),
+            ("FONTNAME", (7, 1), (7, -1), "Helvetica-Oblique"),
             ("ROWBACKGROUNDS", (0, 1), (-1, -1), [colors.white, colors.Color(.965, .97, .975)]),
             ("GRID", (0, 0), (-1, -1), 0.35, colors.Color(.86, .87, .89)), ("VALIGN", (0, 0), (-1, -1), "TOP"),
             ("ALIGN", (4, 1), (5, -1), "RIGHT"), ("TOPPADDING", (0, 0), (-1, -1), 3),

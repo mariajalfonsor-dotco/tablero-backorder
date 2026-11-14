@@ -126,6 +126,14 @@ def eta_calculada(r: dict):
     return sumar_dias(str(r["fecha"])[:10], dias)
 
 
+def eta_mostrada(r: dict):
+    """(fecha, es_calculada): la ETA de Toyota si existe; si no, la calculada por tipo de envío."""
+    if r.get("eta"):
+        return r["eta"], False
+    c = eta_calculada(r)
+    return (c, True) if c else (None, False)
+
+
 def lead_time(a, b):
     """Días hábiles (lunes a viernes) entre fecha de pedido y llegada, incluyendo ambos."""
     if not a or not b:
@@ -741,7 +749,7 @@ def registrar_empaque(rows, pk: dict, res: dict, archivo: str) -> dict:
 
 
 # ------------------------------------------------------ Excel de salida
-def _xlsx(hojas: dict[str, tuple[list[str], list[list]]]) -> bytes:
+def _xlsx(hojas: dict[str, tuple[list[str], list[list]]], rojos: dict | None = None) -> bytes:
     from openpyxl import Workbook
     from openpyxl.styles import Font, PatternFill
     wb = Workbook()
@@ -761,6 +769,8 @@ def _xlsx(hojas: dict[str, tuple[list[str], list[list]]]) -> bytes:
             for c in col:
                 if isinstance(c.value, dt.date):
                     c.number_format = "DD/MM/YYYY"
+        for fila, col in (rojos or {}).get(nombre, ()):
+            ws.cell(row=fila, column=col).font = Font(color="D32F2F", bold=True)
         ws.freeze_panes = "A2"
     buf = io.BytesIO()
     wb.save(buf)
@@ -768,15 +778,17 @@ def _xlsx(hojas: dict[str, tuple[list[str], list[list]]]) -> bytes:
 
 
 def excel_tablero(rows: dict[str, dict]) -> bytes:
-    head = ["#", "PEDIDO", "FECHA PEDIDO", "REFERENCIA", "DESCRIPCIÓN", "CANTIDAD", "CANT. FÁBRICA", "ETA TOYOTA", "ETA CALCULADA",
+    head = ["#", "PEDIDO", "FECHA PEDIDO", "REFERENCIA", "DESCRIPCIÓN", "CANTIDAD", "CANT. FÁBRICA", "ETA",
             "CANAL", "CLIENTE", "RESPONSABLE", "FECHA REAL LLEGADA", "LEAD TIME", "ESTADO", "NOTA"]
     filas = []
     for r in sorted(rows.values(), key=lambda r: r.get("n") or 0):
         lt = lead_time(r.get("fecha"), r.get("llegada"))
         filas.append([r.get("n"), r.get("pedido"), r.get("fecha"), r.get("ref"), r.get("desc"), r.get("cant"),
-                      r.get("cantFab"), r.get("eta"), eta_calculada(r), r.get("canal"), r.get("cliente"), r.get("resp"),
+                      r.get("cantFab"), eta_mostrada(r)[0], r.get("canal"), r.get("cliente"), r.get("resp"),
                       r.get("llegada"), "-" if lt is None else lt, estado_mostrado(r), r.get("nota") or ""])
-    return _xlsx({"Tablero": (head, filas)})
+    rojos = {(i + 2, 8) for i, r in enumerate(sorted(rows.values(), key=lambda r: r.get("n") or 0))
+             if eta_mostrada(r)[1]}
+    return _xlsx({"Tablero": (head, filas)}, rojos={"Tablero": rojos})
 
 
 def excel_carga(c: dict) -> bytes:
@@ -887,29 +899,31 @@ def pdf_canal(rows, canal: str, alcance: str, actualizado: str | None) -> bytes:
         st = Table([num, lab], colWidths=[118] * len(resumen), hAlign="LEFT")
         st.setStyle(TableStyle([("LEFTPADDING", (0, 0), (-1, -1), 0), ("BOTTOMPADDING", (0, 0), (-1, -1), 1)]))
         story += [st, Spacer(1, 10)]
-        head = ["Pedido", "Fecha pedido", "Referencia", "Descripción", "Cant.", "Cant. fáb.", "ETA Toyota", "ETA calc.", "Cliente",
+        head = ["Pedido", "Fecha pedido", "Referencia", "Descripción", "Cant.", "Cant. fáb.", "ETA", "Cliente",
                 "Responsable", "Estado"]
         data = [head]
         estilos = []
         for i, r in enumerate(lst, start=1):
             em = estado_mostrado(r)
-            eta = "Sin ETD" if cat(r) == "sinetd" else fmt_d(r.get("eta"))
+            eta_f, es_calc = eta_mostrada(r)
+            eta = fmt_d(eta_f) if eta_f else ("Sin ETD" if cat(r) == "sinetd" else "")
             data.append([r.get("pedido") or "", fmt_d(r.get("fecha")), r.get("ref") or "",
                          Paragraph(str(r.get("desc") or ""), cel), "" if r.get("cant") is None else r.get("cant"),
-                         "" if r.get("cantFab") is None else r.get("cantFab"), eta, fmt_d(eta_calculada(r)),
+                         "" if r.get("cantFab") is None else r.get("cantFab"), eta,
                          Paragraph(str(r.get("cliente") or ""), cel), Paragraph(str(r.get("resp") or ""), cel), em])
             colr = next((v for k2, v in est_color.items() if em.startswith(k2)), None)
             if colr:
-                estilos.append(("TEXTCOLOR", (10, i), (10, i), colors.Color(*(v / 255 for v in colr))))
-            if eta == "Sin ETD":
+                estilos.append(("TEXTCOLOR", (9, i), (9, i), colors.Color(*(v / 255 for v in colr))))
+            if es_calc:  # ETA calculada en rojo; la de Toyota en negro
+                estilos += [("TEXTCOLOR", (6, i), (6, i), colors.Color(211 / 255, 47 / 255, 47 / 255)),
+                            ("FONTNAME", (6, i), (6, i), "Helvetica-Bold")]
+            elif eta == "Sin ETD":
                 estilos.append(("TEXTCOLOR", (6, i), (6, i), colors.Color(47 / 255, 90 / 255, 168 / 255)))
-        t = Table(data, colWidths=[46, 54, 78, 150, 30, 40, 52, 52, 118, 88, 76], repeatRows=1)
+        t = Table(data, colWidths=[48, 56, 80, 175, 32, 42, 54, 130, 92, 77], repeatRows=1)
         t.setStyle(TableStyle([
             ("BACKGROUND", (0, 0), (-1, 0), rgb), ("TEXTCOLOR", (0, 0), (-1, 0), tinta),
             ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"), ("FONTSIZE", (0, 0), (-1, -1), 7.3),
-            ("FONTNAME", (2, 1), (2, -1), "Helvetica-Bold"), ("FONTNAME", (10, 1), (10, -1), "Helvetica-Bold"),
-            ("TEXTCOLOR", (7, 1), (7, -1), colors.Color(47 / 255, 90 / 255, 168 / 255)),
-            ("FONTNAME", (7, 1), (7, -1), "Helvetica-Oblique"),
+            ("FONTNAME", (2, 1), (2, -1), "Helvetica-Bold"), ("FONTNAME", (9, 1), (9, -1), "Helvetica-Bold"),
             ("ROWBACKGROUNDS", (0, 1), (-1, -1), [colors.white, colors.Color(.965, .97, .975)]),
             ("GRID", (0, 0), (-1, -1), 0.35, colors.Color(.86, .87, .89)), ("VALIGN", (0, 0), (-1, -1), "TOP"),
             ("ALIGN", (4, 1), (5, -1), "RIGHT"), ("TOPPADDING", (0, 0), (-1, -1), 3),

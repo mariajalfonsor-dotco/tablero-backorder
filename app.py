@@ -219,7 +219,7 @@ def dlg_repuesto(rid: str | None, pre: dict | None = None):
         base = st.session_state.e_fecha or dt.date.today()
         st.info(f"**ETA calculada:** {base + dt.timedelta(days=int(st.session_state.e_envio)):%d/%m/%Y}  "
                 f"(fecha de pedido {base:%d/%m/%Y} + {st.session_state.e_envio} días calendario). "
-                "Se muestra en su propia columna; la ETA de Toyota no cambia.")
+                "Si el repuesto no tiene ETA de Toyota, en la tabla se muestra esta en rojo.")
     canales = sorted(set(L.CANALES_BASE) | {x.get("canal") for x in rows.values() if x.get("canal")})
     if st.session_state.e_canal and st.session_state.e_canal not in canales:
         canales.append(st.session_state.e_canal)
@@ -340,7 +340,8 @@ with tab_t:
         f"<div class='leyenda'><span><span class='sw' style='background:{UPD_BG};border:1px solid #9a7400'></span>"
         f"Amarillo: {nf(n_upd)} pedidos existentes actualizados en la carga del {L.fmt_d(cfg.get('actualizado'))}</span>"
         f"<span><span class='sw' style='background:{NUEVO_BG};border:1px solid #6d3fc0'></span>"
-        f"Morado: {nf(n_new)} repuestos nuevos desde la fábrica</span></div>", unsafe_allow_html=True)
+        f"Morado: {nf(n_new)} repuestos nuevos desde la fábrica</span>"
+        f"<span><b style='color:#16191f'>ETA negra</b>: de Toyota · <b style='color:#d32f2f'>ETA roja</b>: calculada</span></div>", unsafe_allow_html=True)
 
     qf = L.fold(q)
     lista = []
@@ -390,19 +391,18 @@ with tab_t:
     df = pd.DataFrame([{
         "#": r.get("n"), "Pedido": r.get("pedido"), "Fecha pedido": fecha(r.get("fecha")), "Referencia": r.get("ref"),
         "Descripción": r.get("desc"), "Cant. pedida": r.get("cant"), "Cant. fábrica": r.get("cantFab"),
-        "ETA Toyota": fecha(r.get("eta")), "ETA calculada": fecha(L.eta_calculada(r)), "Canal": r.get("canal") or "", "Cliente": r.get("cliente"),
+        "ETA": fecha(L.eta_mostrada(r)[0]), "Canal": r.get("canal") or "", "Cliente": r.get("cliente"),
         "Responsable": r.get("resp"), "Llegada": fecha(r.get("llegada")),
         "Lead time": L.lead_time(r.get("fecha"), r.get("llegada")), "Estado": em} for _, r, em in lista],
-        columns=["#", "Pedido", "Fecha pedido", "Referencia", "Descripción", "Cant. pedida", "Cant. fábrica", "ETA Toyota", "ETA calculada",
+        columns=["#", "Pedido", "Fecha pedido", "Referencia", "Descripción", "Cant. pedida", "Cant. fábrica", "ETA",
                  "Canal", "Cliente", "Responsable", "Llegada", "Lead time", "Estado"])
-    for col in ("Fecha pedido", "ETA Toyota", "ETA calculada", "Llegada"):
+    for col in ("Fecha pedido", "ETA", "Llegada"):
         df[col] = [d.strftime("%d/%m/%Y") if d else "" for d in df[col]]
     for col in ("Cant. pedida", "Cant. fábrica", "Lead time"):
         df[col] = [("" if v is None or v != v else f"{v:g}") for v in df[col]]
 
     COLS = list(df.columns)
-    i_canal, i_eta, i_cf, i_est = (COLS.index(c) for c in ("Canal", "ETA Toyota", "Cant. fábrica", "Estado"))
-    i_etac = COLS.index("ETA calculada")
+    i_canal, i_eta, i_cf, i_est = (COLS.index(c) for c in ("Canal", "ETA", "Cant. fábrica", "Estado"))
     UPD_CSS = f"background-color:{UPD_BG};color:#6b4f00;font-weight:700;border:1px solid #c9a200"
     matriz = []
     for _, r, em in lista:
@@ -415,10 +415,11 @@ with tab_t:
                           "background-color:#fff;color:#16191f;font-weight:700;border:1px solid #16191f")
         c = L.cat(r, HOY)
         if c == "vencida":
-            f[i_eta] = fila + "color:#b42318;font-weight:700"
+            f[i_eta] = fila + "color:#16191f;font-weight:700"
         elif c == "revisar":
             f[i_eta] = fila + "color:#8a8f99;text-decoration:line-through"
-        f[i_etac] = fila + "color:#2f5aa8;font-style:italic"
+        if L.eta_mostrada(r)[1]:  # ETA calculada (no viene de Toyota): rojo
+            f[i_eta] = fila + "color:#d32f2f;font-weight:700"
         colr = next((v for kk, v in EST_COLOR.items() if em.startswith(kk)), "#16191f")
         f[i_est] = fila + f"color:{colr};font-weight:700"
         upd = L.campos_actualizados(r, cfg)

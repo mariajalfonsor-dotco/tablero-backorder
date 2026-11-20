@@ -134,8 +134,45 @@ def eta_mostrada(r: dict):
     return (c, True) if c else (None, False)
 
 
+def _pascua(y: int) -> dt.date:
+    """Domingo de Pascua (calendario gregoriano)."""
+    a, b, c = y % 19, y // 100, y % 100
+    d, e = b // 4, b % 4
+    f = (b + 8) // 25
+    g = (b - f + 1) // 3
+    h = (19 * a + b - d - g + 15) % 30
+    i, k = c // 4, c % 4
+    l_ = (32 + 2 * e + 2 * i - h - k) % 7
+    m = (a + 11 * h + 22 * l_) // 451
+    mes = (h + l_ - 7 * m + 114) // 31
+    dia = ((h + l_ - 7 * m + 114) % 31) + 1
+    return dt.date(y, mes, dia)
+
+
+_FESTIVOS_CACHE: dict[int, set] = {}
+
+
+def festivos_colombia(y: int) -> set:
+    """Festivos de Colombia del año y (incluye los que se trasladan al lunes por Ley Emiliani)."""
+    if y in _FESTIVOS_CACHE:
+        return _FESTIVOS_CACHE[y]
+    lunes = lambda d: d + dt.timedelta(days=(7 - d.weekday()) % 7)  # siguiente lunes (o el mismo)
+    fijos = [dt.date(y, 1, 1), dt.date(y, 5, 1), dt.date(y, 7, 20), dt.date(y, 8, 7), dt.date(y, 12, 8),
+             dt.date(y, 12, 25)]
+    emiliani = [lunes(dt.date(y, m, d)) for m, d in ((1, 6), (3, 19), (6, 29), (8, 15), (10, 12), (11, 1), (11, 11))]
+    p = _pascua(y)
+    semana_santa = [p - dt.timedelta(days=3), p - dt.timedelta(days=2)]  # jueves y viernes santo
+    moviles = [p + dt.timedelta(days=43), p + dt.timedelta(days=64), p + dt.timedelta(days=71)]  # Ascensión, Corpus, S. Corazón
+    _FESTIVOS_CACHE[y] = set(fijos + emiliani + semana_santa + moviles)
+    return _FESTIVOS_CACHE[y]
+
+
+def es_habil(d: dt.date) -> bool:
+    return d.weekday() < 5 and d not in festivos_colombia(d.year)
+
+
 def lead_time(a, b):
-    """Días hábiles (lunes a viernes) entre fecha de pedido y llegada, incluyendo ambos."""
+    """Días hábiles en Colombia (lunes a viernes sin festivos) entre fecha de pedido y llegada, incluyendo ambos."""
     if not a or not b:
         return None
     d1, d2 = dt.date.fromisoformat(a[:10]), dt.date.fromisoformat(b[:10])
@@ -145,7 +182,7 @@ def lead_time(a, b):
     n = 0
     d = d1
     while d <= d2:
-        if d.weekday() < 5:
+        if es_habil(d):
             n += 1
         d += dt.timedelta(days=1)
     return n * sign
@@ -391,7 +428,7 @@ def estado_mostrado(r: dict, hoy_iso: str | None = None) -> str:
     if c == "revisar":
         return "Revisar"
     if c == "sinetd":
-        return "Sin ETD"
+        return "Sin ETA"
     e = r.get("estado") or ""
     if e == "Parcial" and r.get("recibido") is not None:
         return f"Parcial {r['recibido']}/{r.get('cant') if r.get('cant') is not None else '?'}"
@@ -779,7 +816,7 @@ def _xlsx(hojas: dict[str, tuple[list[str], list[list]]], rojos: dict | None = N
 
 def excel_tablero(rows: dict[str, dict]) -> bytes:
     head = ["#", "PEDIDO", "FECHA PEDIDO", "REFERENCIA", "DESCRIPCIÓN", "CANTIDAD", "CANT. FÁBRICA", "ETA",
-            "CANAL", "CLIENTE", "RESPONSABLE", "FECHA REAL LLEGADA", "LEAD TIME", "ESTADO", "NOTA"]
+            "CANAL", "CLIENTE", "RESPONSABLE", "FECHA REAL LLEGADA", "LEAD TIME (DÍAS HÁBILES)", "ESTADO", "NOTA"]
     filas = []
     for r in sorted(rows.values(), key=lambda r: r.get("n") or 0):
         lt = lead_time(r.get("fecha"), r.get("llegada"))
@@ -864,7 +901,7 @@ def pdf_canal(rows, canal: str, alcance: str, actualizado: str | None) -> bytes:
     cs = canales_presentes(rows) if canal == "__all" else [canal]
     cel = ParagraphStyle("c", fontName="Helvetica", fontSize=7.3, leading=8.8)
     story, primero = [], True
-    est_color = {"Alerta": (180, 35, 24), "Revisar": (161, 92, 0), "Sin ETD": (47, 90, 168), "Llegó": (31, 122, 77),
+    est_color = {"Alerta": (180, 35, 24), "Revisar": (161, 92, 0), "Sin ETA": (47, 90, 168), "Llegó": (31, 122, 77),
                  "Cancelado": (120, 120, 120)}
     for c in cs:
         lst = filas_reporte(rows, c, alcance)
@@ -888,7 +925,7 @@ def pdf_canal(rows, canal: str, alcance: str, actualizado: str | None) -> bytes:
         for r in lst:
             cnt[cat(r)] += 1
         resumen = [("TOTAL", len(lst), (30, 30, 30)), ("AL DÍA", cnt["aldia"], (31, 122, 77)),
-                   ("SIN ETD", cnt["sinetd"], (47, 90, 168)), ("ETA VENCIDA", cnt["vencida"], (180, 35, 24)),
+                   ("SIN ETA", cnt["sinetd"], (47, 90, 168)), ("ETA VENCIDA", cnt["vencida"], (180, 35, 24)),
                    ("NO APARECEN EN FÁBRICA", cnt["revisar"], (161, 92, 0))]
         if alcance == "todos":
             resumen.append(("LLEGARON", cnt["llego"], (31, 122, 77)))
@@ -906,7 +943,7 @@ def pdf_canal(rows, canal: str, alcance: str, actualizado: str | None) -> bytes:
         for i, r in enumerate(lst, start=1):
             em = estado_mostrado(r)
             eta_f, es_calc = eta_mostrada(r)
-            eta = fmt_d(eta_f) if eta_f else ("Sin ETD" if cat(r) == "sinetd" else "")
+            eta = fmt_d(eta_f) if eta_f else ("Sin ETA" if cat(r) == "sinetd" else "")
             data.append([r.get("pedido") or "", fmt_d(r.get("fecha")), r.get("ref") or "",
                          Paragraph(str(r.get("desc") or ""), cel), "" if r.get("cant") is None else r.get("cant"),
                          "" if r.get("cantFab") is None else r.get("cantFab"), eta,
@@ -917,7 +954,7 @@ def pdf_canal(rows, canal: str, alcance: str, actualizado: str | None) -> bytes:
             if es_calc:  # ETA calculada en rojo; la de Toyota en negro
                 estilos += [("TEXTCOLOR", (6, i), (6, i), colors.Color(211 / 255, 47 / 255, 47 / 255)),
                             ("FONTNAME", (6, i), (6, i), "Helvetica-Bold")]
-            elif eta == "Sin ETD":
+            elif eta == "Sin ETA":
                 estilos.append(("TEXTCOLOR", (6, i), (6, i), colors.Color(47 / 255, 90 / 255, 168 / 255)))
         t = Table(data, colWidths=[48, 56, 80, 175, 32, 42, 54, 130, 92, 77], repeatRows=1)
         t.setStyle(TableStyle([

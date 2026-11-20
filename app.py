@@ -34,7 +34,7 @@ st.markdown("""
 .block-container{padding-top:1.4rem;max-width:1500px}
 h1{font-size:1.9rem!important;text-transform:uppercase;letter-spacing:.01em;margin-bottom:0!important}
 .meta{color:#5d6573;font-size:.92rem;margin:.1rem 0 .6rem}
-.kpis{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:10px;margin:.4rem 0 .6rem}
+.kpis{display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:10px;margin:.4rem 0 .6rem}
 .kpi{border:1px solid #d3d7de;border-radius:6px;padding:10px 14px;background:#fff}
 .kpi .k{font-family:monospace;font-size:11px;letter-spacing:.06em;text-transform:uppercase;color:#5d6573}
 .kpi .v{font-size:30px;font-weight:700;line-height:1.1}
@@ -50,7 +50,7 @@ TINTE = {"colision": "#d4e3f8", "boutique": "#e4e6e9", "mostrador": "#d6efd9", "
 CHIP = {"colision": "#2463c4", "boutique": "#8c9199", "mostrador": "#2e9e46", "stock": "#ffffff",
         "mecanica": "#d32f2f", "otro": "#5d6573"}
 NUEVO_BG, UPD_BG = "#e6dcfa", "#ffe98a"  # nuevos morado, actualizados por fábrica amarillo
-EST_COLOR = {"Alerta": "#b42318", "Revisar": "#a15c00", "Sin ETD": "#2f5aa8", "Llegó": "#1f7a4d",
+EST_COLOR = {"Alerta": "#b42318", "Revisar": "#a15c00", "Sin ETA": "#2f5aa8", "Llegó": "#1f7a4d",
              "Parcial": "#2f5aa8", "Cancelado": "#7a7a7a", "Pendiente": "#a15c00"}
 ENVIOS = {"": "Sin calcular", "28": "Aéreo (28 días)", "66": "Marítimo (66 días)"}
 
@@ -163,12 +163,14 @@ for r in rows.values():
             lt_sum += lt
             lt_n += 1
 nf = lambda n: f"{n:,}".replace(",", ".")
+bo_fab = cnt["aldia"] + cnt["sinetd"] + cnt["vencida"]
 tarjetas = [("Todos los estados", len(rows), "#16191f", f"Backorder {nf(bo)} (Pendiente + Parcial)"),
+            ("BO con fábrica", bo_fab, "#d9480f", "Al día + Sin ETA + ETA vencida"),
             ("Al día", cnt["aldia"], "#1f7a4d", "ETA confirmada, todavía no vence"),
-            ("Sin ETD", cnt["sinetd"], "#2f5aa8", "Fábrica: “Pedido sin ETD”"),
+            ("Sin ETA", cnt["sinetd"], "#2f5aa8", "La fábrica aún no da fecha"),
             ("ETA vencida", cnt["vencida"], "#b42318", "Estado Alerta"),
             ("No aparecen en fábrica", cnt["revisar"], "#a15c00", "Estado Revisar"),
-            ("Llegaron", cnt["llego"], "#16191f", f"Lead time prom. {round(lt_sum / lt_n) if lt_n else '—'} días hábiles")]
+            ("Llegaron", cnt["llego"], "#16191f", f"Lead time prom. {round(lt_sum / lt_n) if lt_n else '—'} días hábiles (sin festivos)")]
 st.markdown("<div class='kpis'>" + "".join(
     f"<div class='kpi'><div class='k'>{k}</div><div class='v' style='color:{c}'>{nf(v)}</div><div class='s'>{s}</div></div>"
     for k, v, c, s in tarjetas) + "</div>", unsafe_allow_html=True)
@@ -253,7 +255,7 @@ def dlg_repuesto(rid: str | None, pre: dict | None = None):
             v["revisarDesde"] = None
         if v["estado"] == "Llegó" and not v["llegada"]:
             v["llegada"] = HOY
-        # Sin ETD se quita cuando alguien escribe una ETA nueva
+        # Sin ETA se quita cuando alguien escribe una ETA nueva
         if rid:
             v["sinEtd"] = False if (v["eta"] and v["eta"] != r.get("eta")) else bool(r.get("sinEtd"))
         else:
@@ -291,15 +293,15 @@ def dlg_repuesto(rid: str | None, pre: dict | None = None):
 with tab_t:
     if st.session_state.get("aviso"):
         st.toast(st.session_state.pop("aviso"))
-    opciones = {"": f"Todos · {nf(len(rows))}", "aldia": f"Al día · {nf(cnt['aldia'])}",
-                "sinetd": f"Sin ETD · {nf(cnt['sinetd'])}", "vencida": f"ETA vencida · {nf(cnt['vencida'])}",
+    opciones = {"": f"Todos · {nf(len(rows))}", "bofab": f"BO con fábrica · {nf(bo_fab)}",
+                "aldia": f"Al día · {nf(cnt['aldia'])}", "sinetd": f"Sin ETA · {nf(cnt['sinetd'])}", "vencida": f"ETA vencida · {nf(cnt['vencida'])}",
                 "revisar": f"No aparecen en fábrica · {nf(cnt['revisar'])}", "llego": f"Llegaron · {nf(cnt['llego'])}"}
     grupo = st.segmented_control("Ver", list(opciones), format_func=opciones.get, default="", key="grupo",
                                  label_visibility="collapsed") or ""
     f1, f2, f3, f4, f5 = st.columns([3, 1.6, 1.3, 1.6, 1.1])
     q = f1.text_input("Buscar", placeholder="Buscar referencia, pedido, cliente, descripción…",
                       label_visibility="collapsed")
-    est_op = ["", "backorder", "Alerta", "Revisar", "Sin ETD", "Pendiente", "Parcial", "Llegó", "Cancelado"]
+    est_op = ["", "backorder", "Alerta", "Revisar", "Sin ETA", "Pendiente", "Parcial", "Llegó", "Cancelado"]
     est_lab = {"": "Todos los estados", "backorder": "Backorder (Pendiente + Parcial)", "Alerta": "Alerta (ETA vencida)",
                "Revisar": "Revisar (no aparece en fábrica)"}
     f_est = f2.selectbox("Estado", est_op, format_func=lambda x: est_lab.get(x, x), label_visibility="collapsed")
@@ -348,7 +350,10 @@ with tab_t:
     for rid, r in rows.items():
         em = L.estado_mostrado(r, HOY)
         c = L.cat(r, HOY)
-        if grupo and c != grupo:
+        if grupo == "bofab":
+            if c not in ("aldia", "sinetd", "vencida"):
+                continue
+        elif grupo and c != grupo:
             continue
         if f_est == "backorder":
             if r.get("estado") not in L.OPEN:
@@ -393,12 +398,12 @@ with tab_t:
         "Descripción": r.get("desc"), "Cant. pedida": r.get("cant"), "Cant. fábrica": r.get("cantFab"),
         "ETA": fecha(L.eta_mostrada(r)[0]), "Canal": r.get("canal") or "", "Cliente": r.get("cliente"),
         "Responsable": r.get("resp"), "Llegada": fecha(r.get("llegada")),
-        "Lead time": L.lead_time(r.get("fecha"), r.get("llegada")), "Estado": em} for _, r, em in lista],
+        "Lead time (días hábiles)": L.lead_time(r.get("fecha"), r.get("llegada")), "Estado": em} for _, r, em in lista],
         columns=["#", "Pedido", "Fecha pedido", "Referencia", "Descripción", "Cant. pedida", "Cant. fábrica", "ETA",
-                 "Canal", "Cliente", "Responsable", "Llegada", "Lead time", "Estado"])
+                 "Canal", "Cliente", "Responsable", "Llegada", "Lead time (días hábiles)", "Estado"])
     for col in ("Fecha pedido", "ETA", "Llegada"):
         df[col] = [d.strftime("%d/%m/%Y") if d else "" for d in df[col]]
-    for col in ("Cant. pedida", "Cant. fábrica", "Lead time"):
+    for col in ("Cant. pedida", "Cant. fábrica", "Lead time (días hábiles)"):
         df[col] = [("" if v is None or v != v else f"{v:g}") for v in df[col]]
 
     COLS = list(df.columns)
@@ -559,8 +564,8 @@ with tab_f:
             m[4].metric("Cant. fábrica que cambian", sum(1 for c in res["cambios"] if c["campo"] == "Cant. fábrica"))
             m[5].metric("Nuevos que se agregan", len(res["nuevos"]))
             if res["sin_eta"]:
-                st.info(f"{res['sin_eta']} pendientes aparecen en la fábrica sin fecha (por ejemplo “PEDIDO SIN ETD”); "
-                        "quedan en el grupo “Sin ETD”.")
+                st.info(f"{res['sin_eta']} pendientes aparecen en la fábrica sin fecha de llegada; "
+                        "quedan en el grupo “Sin ETA”.")
             if res["desconocidos"]:
                 st.info("Estos estados de la fábrica no se reconocieron y no cambian nada: " + ", ".join(res["desconocidos"]))
             if modo == "r":

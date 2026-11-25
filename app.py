@@ -234,7 +234,8 @@ def dlg_repuesto(rid: str | None, pre: dict | None = None):
     c3.selectbox("Responsable", [""] + resp, key="e_resp", accept_new_options=True,
                  format_func=lambda x: x or "(sin responsable)")
     st.text_input("Cliente", key="e_cliente")
-    st.text_area("Nota", key="e_nota", height=70)
+    st.text_area("Novedades", key="e_nota", height=70,
+                 placeholder="Escribe aquí cualquier novedad del repuesto (aparece en el grupo «Novedades»)")
     st.checkbox("Marcado para revisar", key="e_revisar")
 
     b1, b2, b3 = st.columns([1, 1, 3])
@@ -295,7 +296,8 @@ with tab_t:
         st.toast(st.session_state.pop("aviso"))
     opciones = {"": f"Todos · {nf(len(rows))}", "bofab": f"BO con fábrica · {nf(bo_fab)}",
                 "aldia": f"Al día · {nf(cnt['aldia'])}", "sinetd": f"Sin ETA · {nf(cnt['sinetd'])}", "vencida": f"ETA vencida · {nf(cnt['vencida'])}",
-                "revisar": f"No aparecen en fábrica · {nf(cnt['revisar'])}", "llego": f"Llegaron · {nf(cnt['llego'])}"}
+                "revisar": f"No aparecen en fábrica · {nf(cnt['revisar'])}", "llego": f"Llegaron · {nf(cnt['llego'])}",
+                "novedades": f"Novedades · {nf(sum(1 for r in rows.values() if str(r.get('nota') or '').strip()))}"}
     grupo = st.segmented_control("Ver", list(opciones), format_func=opciones.get, default="", key="grupo",
                                  label_visibility="collapsed") or ""
     f1, f2, f3, f4, f5 = st.columns([3, 1.6, 1.3, 1.6, 1.1])
@@ -353,6 +355,9 @@ with tab_t:
         if grupo == "bofab":
             if c not in ("aldia", "sinetd", "vencida"):
                 continue
+        elif grupo == "novedades":  # repuestos con algo escrito en la nota
+            if not str(r.get("nota") or "").strip():
+                continue
         elif grupo and c != grupo:
             continue
         if f_est == "backorder":
@@ -401,6 +406,8 @@ with tab_t:
         "Lead time (días hábiles)": L.lead_time(r.get("fecha"), r.get("llegada")), "Estado": em} for _, r, em in lista],
         columns=["#", "Pedido", "Fecha pedido", "Referencia", "Descripción", "Cant. pedida", "Cant. fábrica", "ETA",
                  "Canal", "Cliente", "Responsable", "Llegada", "Lead time (días hábiles)", "Estado"])
+    if grupo == "novedades":  # en esta vista se ve el texto de la novedad junto a la descripción
+        df.insert(df.columns.get_loc("Descripción") + 1, "Novedades", [str(r.get("nota") or "") for _, r, _ in lista])
     for col in ("Fecha pedido", "ETA", "Llegada"):
         df[col] = [d.strftime("%d/%m/%Y") if d else "" for d in df[col]]
     for col in ("Cant. pedida", "Cant. fábrica", "Lead time (días hábiles)"):
@@ -454,6 +461,7 @@ with tab_t:
         on_select="rerun", selection_mode="single-row", key=f"tabla_{st.session_state.tabla_v}",
         column_config={
             "Descripción": st.column_config.TextColumn(width="medium"),
+            "Novedades": st.column_config.TextColumn(width="large"),
             "Cliente": st.column_config.TextColumn(width="medium"),
             "#": st.column_config.NumberColumn(width="small", format="%d"),
 

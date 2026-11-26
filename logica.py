@@ -197,7 +197,7 @@ def lead_time_info(r: dict, envio_defecto="28"):
     """
     real = lead_time(r.get("fecha"), r.get("llegada"))
     if real is not None:
-        return real, False
+        return real, bool(r.get("llegadaEstimada"))
     if r.get("estado") != "Llegó" or not r.get("fecha"):
         return None, False
     try:
@@ -208,6 +208,31 @@ def lead_time_info(r: dict, envio_defecto="28"):
         return None, False
     fecha = str(r["fecha"])[:10]
     return lead_time(fecha, sumar_dias(fecha, dias)), True
+
+
+def llegada_estimada(r: dict, envio_defecto="28"):
+    """Fecha de llegada estimada: fecha de pedido + días del envío, movida al siguiente día hábil."""
+    try:
+        dias = int(r.get("envio") or envio_defecto or 0)
+    except (TypeError, ValueError):
+        dias = 0
+    if not dias or not r.get("fecha"):
+        return None
+    d = dt.date.fromisoformat(str(r["fecha"])[:10]) + dt.timedelta(days=dias)
+    while not es_habil(d):
+        d += dt.timedelta(days=1)
+    return d.isoformat()
+
+
+def llenar_llegadas(rows: dict[str, dict], envio_defecto="28") -> dict[str, dict]:
+    """Patch con la fecha de llegada estimada para los repuestos en «Llegó» que no tienen fecha real."""
+    patch = {}
+    for rid, r in rows.items():
+        if r.get("estado") == "Llegó" and not r.get("llegada"):
+            f = llegada_estimada(r, envio_defecto)
+            if f:
+                patch[rid] = {"llegada": f, "llegadaEstimada": True}
+    return patch
 
 
 def sumar_dias(fecha: str | None, dias: int) -> str:

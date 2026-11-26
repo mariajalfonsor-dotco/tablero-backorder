@@ -268,6 +268,8 @@ def dlg_repuesto(rid: str | None, pre: dict | None = None):
             v["sinEtd"] = bool(pre and pre.get("sinEtd")) and not v["eta"]
         # Si faltan cliente/canal/responsable y el pedido ya existe en otra fila, se copian de ahí
         v.update(L.completar_fila(v, L.datos_por_pedido({k: x for k, x in rows.items() if k != rid})))
+        if rid and v.get("llegada") != r.get("llegada"):
+            v["llegadaEstimada"] = None  # la escribió una persona: deja de ser estimada
         if rid:
             L.guardar_cambios({rid: v})
         else:
@@ -424,6 +426,7 @@ with tab_t:
     COLS = list(df.columns)
     i_canal, i_eta, i_cf, i_est = (COLS.index(c) for c in ("Canal", "ETA", "Cant. fábrica", "Estado"))
     i_lt = COLS.index("Lead time (días hábiles)")
+    i_lleg = COLS.index("Llegada")
     UPD_CSS = f"background-color:{UPD_BG};color:#6b4f00;font-weight:700;border:1px solid #c9a200"
     matriz = []
     for n_fila, (_, r, em) in enumerate(lista):
@@ -445,6 +448,8 @@ with tab_t:
         f[i_est] = fila + f"color:{colr};font-weight:700"
         if lt_est[n_fila]:
             f[i_lt] = fila + "color:#6b7280;font-style:italic"
+        if r.get("llegadaEstimada"):
+            f[i_lleg] = fila + "color:#6b7280;font-style:italic"
         upd = L.campos_actualizados(r, cfg)
         if "eta" in upd:
             f[i_eta] = UPD_CSS
@@ -711,6 +716,21 @@ with tab_r:
         refrescar()
         st.session_state.xlsx_tab = None
         st.rerun()
+    por_llenar = L.llenar_llegadas(rows, ENVIO_DEF)
+    n_est = sum(1 for r in rows.values() if r.get("llegadaEstimada"))
+    if por_llenar:
+        st.info(f"**{nf(len(por_llenar))} repuestos** están en «Llegó» sin fecha de llegada. Puedes llenarla con la "
+                "fecha estimada (pedido + días del envío, pasada al siguiente día hábil). Quedan marcadas como "
+                "estimadas (en gris en la tabla) y puedes corregir cualquiera a mano.")
+        if st.button(f"Llenar fecha de llegada de {nf(len(por_llenar))} repuestos", type="primary"):
+            L.guardar_cambios(por_llenar)
+            refrescar()
+            st.session_state.tabla_v += 1
+            st.session_state.xlsx_tab = None
+            st.session_state.aviso = f"Se llenó la fecha de llegada de {nf(len(por_llenar))} repuestos"
+            st.rerun()
+    elif n_est:
+        st.success(f"Todos los repuestos en «Llegó» tienen fecha de llegada ({nf(n_est)} son estimadas).")
 
     st.divider()
     st.markdown("#### Tablero completo (Excel)")

@@ -1,4 +1,4 @@
-"""Lógica del Tablero Backorder Yokomotor 173.
+"""Lógica del Tablero Backorder Yokomotor (una app por sede).
 
 Base de datos SQLite (datos/backorder.db), comparación con el Excel de fábrica,
 lectura de la lista de empaque (PDF), reportes en PDF y Excel.
@@ -25,6 +25,29 @@ CANALES_BASE = ["Colisión", "Mecanica", "Mostrador", "Boutique", "Stock"]
 CAMPOS = ["pedido", "fecha", "ref", "desc", "cant", "cantFab", "envio", "eta", "canal",
           "cliente", "resp", "llegada", "estado", "nota"]
 _lock = threading.Lock()
+
+
+def _secreto(nombre):
+    """Lee un valor de las variables de entorno o de los secretos de Streamlit."""
+    v = os.environ.get(nombre)
+    if v:
+        return v
+    try:
+        import streamlit as st
+        v = st.secrets.get(nombre)
+        return str(v) if v is not None else None
+    except Exception:
+        return None
+
+
+# La misma app sirve para varias sedes: el secreto SEDE dice cuál es (por defecto 173).
+# Cada sede guarda sus datos en tablas propias (s72_repuestos, ...); la 173 usa las tablas sin prefijo.
+SEDE = (_secreto("SEDE") or "173").strip()
+_PREFIJO = "" if SEDE == "173" else "s" + re.sub(r"\W", "", SEDE).lower() + "_"
+# Solo la 173 recibe dos Excel de fábrica (sede + Colisión); las demás, uno.
+VARIOS_EXCEL = (_secreto("VARIOS_EXCEL") or ("si" if SEDE == "173" else "no")).lower() in ("si", "sí", "1", "true")
+NOMBRE = f"Yokomotor {SEDE}"
+_TABLAS = re.compile(r"\b(repuestos|cargas|empaques|config)\b")
 
 
 # ---------------------------------------------------------------- utilidades
@@ -268,6 +291,8 @@ class _Cx:
         self.raw, self.pg = raw, pg
 
     def _q(self, sql):
+        if _PREFIJO:
+            sql = _TABLAS.sub(lambda m: _PREFIJO + m.group(1), sql)
         return sql.replace("?", "%s") if self.pg else sql
 
     def execute(self, sql, params=()):
@@ -281,7 +306,7 @@ class _Cx:
             with self.raw.cursor() as cur:
                 cur.executemany(self._q(sql), seq)
         else:
-            self.raw.executemany(sql, seq)
+            self.raw.executemany(self._q(sql), seq)
 
 
 @contextmanager
@@ -945,7 +970,7 @@ def pdf_canal(rows, canal: str, alcance: str, actualizado: str | None) -> bytes:
     buf = io.BytesIO()
     W, H = landscape(A4)
     doc = SimpleDocTemplate(buf, pagesize=landscape(A4), leftMargin=28, rightMargin=28, topMargin=24,
-                            bottomMargin=34, encrypt=enc, title=f"Backorder canal {canal}", author="Yokomotor 173")
+                            bottomMargin=34, encrypt=enc, title=f"Backorder canal {canal}", author=NOMBRE)
     alc_txt = {"todos": "Todos los estados", "vencida": "Solo ETA vencida"}.get(alcance, "Solo backorder (Pendiente + Parcial)")
     cs = canales_presentes(rows) if canal == "__all" else [canal]
     cel = ParagraphStyle("c", fontName="Helvetica", fontSize=7.3, leading=8.8)
@@ -964,7 +989,7 @@ def pdf_canal(rows, canal: str, alcance: str, actualizado: str | None) -> bytes:
         tinta = colors.Color(0.1, 0.1, 0.1) if k == "stock" else colors.white
         tit = ParagraphStyle("t", fontName="Helvetica-Bold", fontSize=17, textColor=tinta, leading=20)
         sub = ParagraphStyle("s", fontName="Helvetica", fontSize=8.5, textColor=tinta, leading=11)
-        banda = Table([[Paragraph(f"Backorder Yokomotor 173 · Canal {c}", tit)],
+        banda = Table([[Paragraph(f"Backorder {NOMBRE} · Canal {c}", tit)],
                        [Paragraph(f"Generado el {fmt_d(hoy())} · Última actualización de fábrica: "
                                   f"{fmt_d(actualizado) or '—'} · {alc_txt}", sub)]], colWidths=[W - 56])
         banda.setStyle(TableStyle([("BACKGROUND", (0, 0), (-1, -1), rgb), ("LEFTPADDING", (0, 0), (-1, -1), 12),

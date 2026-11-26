@@ -1,4 +1,4 @@
-"""Tablero Backorder Yokomotor 173 — interfaz web (Streamlit).
+"""Tablero Backorder Yokomotor — interfaz web (Streamlit).
 
 Ejecutar:  streamlit run app.py
 """
@@ -12,7 +12,7 @@ import streamlit as st
 
 import logica as L
 
-st.set_page_config(page_title="Tablero Backorder Yokomotor 173", page_icon="📦", layout="wide")
+st.set_page_config(page_title=f"Tablero Backorder {L.NOMBRE}", page_icon="📦", layout="wide")
 
 
 @st.cache_resource
@@ -74,7 +74,7 @@ try:  # en Streamlit Community Cloud la clave va en los secretos de la app
 except Exception:
     pass
 if CONF.get("CLAVE") and not st.session_state.get("ok"):
-    st.title("Tablero Backorder · Yokomotor 173")
+    st.title(f"Tablero Backorder · {L.NOMBRE}")
     clave = st.text_input("Clave de acceso", type="password")
     if st.button("Entrar", type="primary"):
         if clave == CONF["CLAVE"]:
@@ -130,7 +130,7 @@ if _auto:
     cfg = _cfg()
 
 if not rows:
-    st.title("Tablero Backorder · Yokomotor 173")
+    st.title(f"Tablero Backorder · {L.NOMBRE}")
     st.info("El tablero está vacío. Si es la primera vez que lo abres, sube el archivo de datos inicial "
             "(**backorder_datos.json**) o un respaldo descargado desde la pestaña Reportes.")
     ini = st.file_uploader("Archivo de datos (.json)", type=["json"])
@@ -154,7 +154,7 @@ for k in ("tabla_v", "up_v", "pk_v"):
 # ------------------------------------------------------------------ encabezado
 st.markdown("<div style='font-family:monospace;font-size:12px;letter-spacing:.08em;color:#5d6573'>"
             "BACKORDER DE REPUESTOS</div>", unsafe_allow_html=True)
-st.title("Tablero Backorder · Yokomotor 173")
+st.title(f"Tablero Backorder · {L.NOMBRE}")
 st.markdown(f"<div class='meta'>Fecha actualización: <b>{L.fmt_d(cfg.get('actualizado')) or '—'}</b>"
             f" &nbsp;·&nbsp; Total en tablero: <b>{len(rows):,}</b></div>".replace(",", "."), unsafe_allow_html=True)
 
@@ -534,13 +534,22 @@ with tab_f:
             st.session_state.ultima_carga = None
             st.rerun()
     else:
-        st.write("Sube **los Excel que envía la fábrica: el de la sede 173 y el de Colisión, juntos**. Se comparan "
-                 "los repuestos **Pendiente** y **Parcial** contra los dos archivos a la vez, por **pedido + referencia**: "
-                 "se actualizan ETA (ETA_DEALER), cantidad de fábrica y estado; los que no aparecen en ninguno quedan "
-                 "en **Revisar**, y los repuestos de la fábrica que no están en el tablero se **agregan solos** como Pendiente.")
-        archs = st.file_uploader("Excel de fábrica (puedes seleccionar los dos archivos a la vez)",
-                                 type=["xlsx", "xls", "xlsm", "csv"], accept_multiple_files=True,
+        if L.VARIOS_EXCEL:
+            st.write("Sube **los Excel que envía la fábrica: el de la sede y el de Colisión, juntos**. Se comparan "
+                     "los repuestos **Pendiente** y **Parcial** contra los dos archivos a la vez, por **pedido + referencia**: "
+                     "se actualizan ETA (ETA_DEALER), cantidad de fábrica y estado; los que no aparecen en ninguno quedan "
+                     "en **Revisar**, y los repuestos de la fábrica que no están en el tablero se **agregan solos** como Pendiente.")
+        else:
+            st.write("Sube **el Excel que envía la fábrica**. Se comparan los repuestos **Pendiente** y **Parcial** por "
+                     "**pedido + referencia**: se actualizan ETA (ETA_DEALER), cantidad de fábrica y estado; los que no "
+                     "aparecen quedan en **Revisar**, y los repuestos de la fábrica que no están en el tablero se "
+                     "**agregan solos** como Pendiente.")
+        archs = st.file_uploader("Excel de fábrica (puedes seleccionar los dos archivos a la vez)" if L.VARIOS_EXCEL
+                                 else "Excel de fábrica",
+                                 type=["xlsx", "xls", "xlsm", "csv"], accept_multiple_files=L.VARIOS_EXCEL,
                                  key=f"up_{st.session_state.up_v}")
+        if archs and not isinstance(archs, list):
+            archs = [archs]
         partes, nombres_arch, error = [], [], False
         for n_a, arch in enumerate(archs or []):
             try:
@@ -582,8 +591,8 @@ with tab_f:
             todos_pedido = all(m["pedido"] >= 0 for _, _, m in partes)
             modo = st.selectbox("Comparar por", ["pr", "r"], index=0 if todos_pedido else 1,
                                 format_func=lambda m: "Pedido + referencia" if m == "pr" else "Solo referencia")
-            if len(partes) == 1:
-                st.warning("Subiste un solo archivo. Si esta semana llegaron el de la sede 173 y el de Colisión, "
+            if len(partes) == 1 and L.VARIOS_EXCEL:
+                st.warning("Subiste un solo archivo. Si esta semana llegaron el de la sede y el de Colisión, "
                            "súbelos **juntos**: si subes solo uno, los repuestos que están en el otro quedarán en Revisar.")
             res = L.comparar_fabrica(rows, aoa_u, hd_u, mapa_u, modo)
             st.markdown("#### Vista previa" + (f" (los {len(partes)} archivos juntos)" if len(partes) > 1 else ""))
@@ -735,7 +744,7 @@ with tab_r:
     if st.button("Preparar Excel del tablero"):
         st.session_state.xlsx_tab = L.excel_tablero(rows, ENVIO_DEF)
     if st.session_state.get("xlsx_tab"):
-        st.download_button("Descargar Excel", st.session_state.xlsx_tab, f"Backorder Yokomotor 173 - {HOY}.xlsx")
+        st.download_button("Descargar Excel", st.session_state.xlsx_tab, f"Backorder {L.NOMBRE} - {HOY}.xlsx")
 
     st.divider()
     st.markdown("#### Respaldo completo")

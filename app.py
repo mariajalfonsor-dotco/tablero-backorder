@@ -120,6 +120,7 @@ def refrescar():
 rows = _rows()
 cfg = _cfg()
 HOY = L.hoy()
+ENVIO_DEF = cfg.get("envio_defecto") or "28"  # para el lead time estimado de los que llegaron sin fecha
 
 if not rows:
     st.title("Tablero Backorder · Yokomotor 173")
@@ -151,17 +152,20 @@ st.markdown(f"<div class='meta'>Fecha actualización: <b>{L.fmt_d(cfg.get('actua
             f" &nbsp;·&nbsp; Total en tablero: <b>{len(rows):,}</b></div>".replace(",", "."), unsafe_allow_html=True)
 
 cnt = {"aldia": 0, "sinetd": 0, "vencida": 0, "revisar": 0, "llego": 0, "otro": 0}
-bo = lt_sum = lt_n = 0
+bo = lt_sum = lt_n = lte_sum = lte_n = 0
 for r in rows.values():
     c = L.cat(r, HOY)
     cnt[c] += 1
     if r.get("estado") in L.OPEN:
         bo += 1
     if c == "llego":
-        lt = L.lead_time(r.get("fecha"), r.get("llegada"))
+        lt, est = L.lead_time_info(r, ENVIO_DEF)
         if lt is not None and lt >= 0:
-            lt_sum += lt
-            lt_n += 1
+            lte_sum += lt
+            lte_n += 1
+            if not est:
+                lt_sum += lt
+                lt_n += 1
 nf = lambda n: f"{n:,}".replace(",", ".")
 bo_fab = cnt["aldia"] + cnt["sinetd"] + cnt["vencida"]
 tarjetas = [("Todos los estados", len(rows), "#16191f", f"Backorder {nf(bo)} (Pendiente + Parcial)"),
@@ -170,7 +174,8 @@ tarjetas = [("Todos los estados", len(rows), "#16191f", f"Backorder {nf(bo)} (Pe
             ("Sin ETA", cnt["sinetd"], "#2f5aa8", "La fábrica aún no da fecha"),
             ("ETA vencida", cnt["vencida"], "#b42318", "Estado Alerta"),
             ("No aparecen en fábrica", cnt["revisar"], "#a15c00", "Estado Revisar"),
-            ("Llegaron", cnt["llego"], "#16191f", f"Lead time prom. {round(lt_sum / lt_n) if lt_n else '—'} días hábiles (sin festivos)")]
+            ("Llegaron", cnt["llego"], "#16191f", f"Lead time prom. {round(lt_sum / lt_n) if lt_n else '—'} días hábiles reales · "
+             f"{round(lte_sum / lte_n) if lte_n else '—'} con estimados")]
 st.markdown("<div class='kpis'>" + "".join(
     f"<div class='kpi'><div class='k'>{k}</div><div class='v' style='color:{c}'>{nf(v)}</div><div class='s'>{s}</div></div>"
     for k, v, c, s in tarjetas) + "</div>", unsafe_allow_html=True)
@@ -403,21 +408,25 @@ with tab_t:
         "Descripción": r.get("desc"), "Cant. pedida": r.get("cant"), "Cant. fábrica": r.get("cantFab"),
         "ETA": fecha(L.eta_mostrada(r)[0]), "Canal": r.get("canal") or "", "Cliente": r.get("cliente"),
         "Responsable": r.get("resp"), "Llegada": fecha(r.get("llegada")),
-        "Lead time (días hábiles)": L.lead_time(r.get("fecha"), r.get("llegada")), "Estado": em} for _, r, em in lista],
+        "Lead time (días hábiles)": L.lead_time_info(r, ENVIO_DEF), "Estado": em} for _, r, em in lista],
         columns=["#", "Pedido", "Fecha pedido", "Referencia", "Descripción", "Cant. pedida", "Cant. fábrica", "ETA",
                  "Canal", "Cliente", "Responsable", "Llegada", "Lead time (días hábiles)", "Estado"])
     if grupo == "novedades":  # en esta vista se ve el texto de la novedad junto a la descripción
         df.insert(df.columns.get_loc("Descripción") + 1, "Novedades", [str(r.get("nota") or "") for _, r, _ in lista])
     for col in ("Fecha pedido", "ETA", "Llegada"):
         df[col] = [d.strftime("%d/%m/%Y") if d else "" for d in df[col]]
-    for col in ("Cant. pedida", "Cant. fábrica", "Lead time (días hábiles)"):
+    for col in ("Cant. pedida", "Cant. fábrica"):
         df[col] = [("" if v is None or v != v else f"{v:g}") for v in df[col]]
+    lt_est = [bool(v[1]) for v in df["Lead time (días hábiles)"]]
+    df["Lead time (días hábiles)"] = [("" if v[0] is None else (f"{v[0]} (est.)" if v[1] else f"{v[0]}"))
+                                      for v in df["Lead time (días hábiles)"]]
 
     COLS = list(df.columns)
     i_canal, i_eta, i_cf, i_est = (COLS.index(c) for c in ("Canal", "ETA", "Cant. fábrica", "Estado"))
+    i_lt = COLS.index("Lead time (días hábiles)")
     UPD_CSS = f"background-color:{UPD_BG};color:#6b4f00;font-weight:700;border:1px solid #c9a200"
     matriz = []
-    for _, r, em in lista:
+    for n_fila, (_, r, em) in enumerate(lista):
         k = L.canal_key(r.get("canal")) if r.get("canal") else None
         bg = NUEVO_BG if L.es_nuevo(r, cfg) else (TINTE.get(k, "") if k else "")
         fila = f"background-color:{bg};" if bg else ""
@@ -434,6 +443,8 @@ with tab_t:
             f[i_eta] = fila + "color:#d32f2f;font-weight:700"
         colr = next((v for kk, v in EST_COLOR.items() if em.startswith(kk)), "#16191f")
         f[i_est] = fila + f"color:{colr};font-weight:700"
+        if lt_est[n_fila]:
+            f[i_lt] = fila + "color:#6b7280;font-style:italic"
         upd = L.campos_actualizados(r, cfg)
         if "eta" in upd:
             f[i_eta] = UPD_CSS
@@ -688,9 +699,23 @@ with tab_r:
         st.download_button(f"Descargar {nombre}", data, nombre, mime="application/pdf")
 
     st.divider()
+    st.markdown("#### Parámetro: lead time estimado")
+    st.caption("Los repuestos en «Llegó» que no tienen fecha real de llegada muestran un lead time **estimado** "
+               "(con «est.»): fecha de pedido + 28 días si el envío es aéreo o + 66 si es marítimo, contado en días "
+               "hábiles. Si el repuesto no tiene tipo de envío, se usa este:")
+    nuevo_def = st.radio("Envío por defecto", ["28", "66"], index=0 if ENVIO_DEF == "28" else 1, horizontal=True,
+                         format_func=lambda x: "Aéreo (28 días)" if x == "28" else "Marítimo (66 días)",
+                         key="envio_def_radio")
+    if nuevo_def != ENVIO_DEF:
+        L.set_config(envio_defecto=nuevo_def)
+        refrescar()
+        st.session_state.xlsx_tab = None
+        st.rerun()
+
+    st.divider()
     st.markdown("#### Tablero completo (Excel)")
     if st.button("Preparar Excel del tablero"):
-        st.session_state.xlsx_tab = L.excel_tablero(rows)
+        st.session_state.xlsx_tab = L.excel_tablero(rows, ENVIO_DEF)
     if st.session_state.get("xlsx_tab"):
         st.download_button("Descargar Excel", st.session_state.xlsx_tab, f"Backorder Yokomotor 173 - {HOY}.xlsx")
 

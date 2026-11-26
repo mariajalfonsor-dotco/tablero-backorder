@@ -188,6 +188,28 @@ def lead_time(a, b):
     return n * sign
 
 
+def lead_time_info(r: dict, envio_defecto="28"):
+    """(lead time en días hábiles, es_estimado).
+
+    Real: fecha de pedido → fecha real de llegada.
+    Estimado (solo repuestos en «Llegó» sin fecha real): fecha de pedido + días del tipo de envío
+    del repuesto (28 aéreo, 66 marítimo) o, si no tiene, el envío por defecto.
+    """
+    real = lead_time(r.get("fecha"), r.get("llegada"))
+    if real is not None:
+        return real, False
+    if r.get("estado") != "Llegó" or not r.get("fecha"):
+        return None, False
+    try:
+        dias = int(r.get("envio") or envio_defecto or 0)
+    except (TypeError, ValueError):
+        dias = 0
+    if not dias:
+        return None, False
+    fecha = str(r["fecha"])[:10]
+    return lead_time(fecha, sumar_dias(fecha, dias)), True
+
+
 def sumar_dias(fecha: str | None, dias: int) -> str:
     base = dt.date.fromisoformat(fecha) if fecha else dt.date.today()
     return (base + dt.timedelta(days=dias)).isoformat()
@@ -814,15 +836,17 @@ def _xlsx(hojas: dict[str, tuple[list[str], list[list]]], rojos: dict | None = N
     return buf.getvalue()
 
 
-def excel_tablero(rows: dict[str, dict]) -> bytes:
+def excel_tablero(rows: dict[str, dict], envio_defecto="28") -> bytes:
     head = ["#", "PEDIDO", "FECHA PEDIDO", "REFERENCIA", "DESCRIPCIÓN", "CANTIDAD", "CANT. FÁBRICA", "ETA",
-            "CANAL", "CLIENTE", "RESPONSABLE", "FECHA REAL LLEGADA", "LEAD TIME (DÍAS HÁBILES)", "ESTADO", "NOTA"]
+            "CANAL", "CLIENTE", "RESPONSABLE", "FECHA REAL LLEGADA", "LEAD TIME (DÍAS HÁBILES)", "TIPO LEAD TIME",
+            "ESTADO", "NOTA"]
     filas = []
     for r in sorted(rows.values(), key=lambda r: r.get("n") or 0):
-        lt = lead_time(r.get("fecha"), r.get("llegada"))
+        lt, est = lead_time_info(r, envio_defecto)
         filas.append([r.get("n"), r.get("pedido"), r.get("fecha"), r.get("ref"), r.get("desc"), r.get("cant"),
                       r.get("cantFab"), eta_mostrada(r)[0], r.get("canal"), r.get("cliente"), r.get("resp"),
-                      r.get("llegada"), "-" if lt is None else lt, estado_mostrado(r), r.get("nota") or ""])
+                      r.get("llegada"), "-" if lt is None else lt, "" if lt is None else ("Estimado" if est else "Real"),
+                      estado_mostrado(r), r.get("nota") or ""])
     rojos = {(i + 2, 8) for i, r in enumerate(sorted(rows.values(), key=lambda r: r.get("n") or 0))
              if eta_mostrada(r)[1]}
     return _xlsx({"Tablero": (head, filas)}, rojos={"Tablero": rojos})

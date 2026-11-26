@@ -121,6 +121,13 @@ rows = _rows()
 cfg = _cfg()
 HOY = L.hoy()
 ENVIO_DEF = cfg.get("envio_defecto") or "28"  # para el lead time estimado de los que llegaron sin fecha
+# Los repuestos en «Llegó» sin fecha de llegada se llenan solos con la fecha estimada (pedido + 28/66 días).
+_auto = L.llenar_llegadas(rows, ENVIO_DEF)
+if _auto:
+    L.guardar_cambios(_auto)
+    refrescar()
+    rows = _rows()
+    cfg = _cfg()
 
 if not rows:
     st.title("Tablero Backorder · Yokomotor 173")
@@ -713,24 +720,15 @@ with tab_r:
                          key="envio_def_radio")
     if nuevo_def != ENVIO_DEF:
         L.set_config(envio_defecto=nuevo_def)
+        # Recalcula las fechas estimadas de los repuestos que no tienen tipo de envío propio.
+        L.guardar_cambios({rid: {"llegada": None, "llegadaEstimada": None} for rid, r in rows.items()
+                           if r.get("llegadaEstimada") and not r.get("envio")})
         refrescar()
         st.session_state.xlsx_tab = None
         st.rerun()
-    por_llenar = L.llenar_llegadas(rows, ENVIO_DEF)
     n_est = sum(1 for r in rows.values() if r.get("llegadaEstimada"))
-    if por_llenar:
-        st.info(f"**{nf(len(por_llenar))} repuestos** están en «Llegó» sin fecha de llegada. Puedes llenarla con la "
-                "fecha estimada (pedido + días del envío, pasada al siguiente día hábil). Quedan marcadas como "
-                "estimadas (en gris en la tabla) y puedes corregir cualquiera a mano.")
-        if st.button(f"Llenar fecha de llegada de {nf(len(por_llenar))} repuestos", type="primary"):
-            L.guardar_cambios(por_llenar)
-            refrescar()
-            st.session_state.tabla_v += 1
-            st.session_state.xlsx_tab = None
-            st.session_state.aviso = f"Se llenó la fecha de llegada de {nf(len(por_llenar))} repuestos"
-            st.rerun()
-    elif n_est:
-        st.success(f"Todos los repuestos en «Llegó» tienen fecha de llegada ({nf(n_est)} son estimadas).")
+    st.success(f"Los repuestos en «Llegó» sin fecha de llegada se llenan solos con la fecha estimada. "
+               f"Hoy hay {nf(n_est)} con fecha estimada (en gris en la tabla); puedes corregir cualquiera a mano.")
 
     st.divider()
     st.markdown("#### Tablero completo (Excel)")

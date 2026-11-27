@@ -128,6 +128,9 @@ HOY = L.hoy()
 ENVIO_DEF = cfg.get("envio_defecto") or "28"  # para el lead time estimado de los que llegaron sin fecha
 # Los repuestos en «Llegó» sin fecha de llegada se llenan solos con la fecha estimada (pedido + 28/66 días).
 _auto = L.llenar_llegadas(rows, ENVIO_DEF)
+# En las sedes con lista fija de responsables, se dejan todos escritos igual (MAYÚSCULA, sin repetir).
+for _rid, _cambio in L.normalizar_responsables(rows).items():
+    _auto.setdefault(_rid, {}).update(_cambio)
 if _auto:
     L.guardar_cambios(_auto)
     refrescar()
@@ -245,7 +248,7 @@ def dlg_repuesto(rid: str | None, pre: dict | None = None):
     c1, c2, c3 = st.columns(3)
     c1.selectbox("Canal", [""] + canales, key="e_canal", format_func=lambda x: x or "(sin canal)")
     c2.selectbox("Estado", L.ESTADOS, key="e_estado")
-    resp = sorted({x.get("resp") for x in rows.values() if x.get("resp")})
+    resp = L.lista_responsables(rows)
     if st.session_state.e_resp and st.session_state.e_resp not in resp:
         resp.append(st.session_state.e_resp)
     c3.selectbox("Responsable", [""] + resp, key="e_resp", accept_new_options=True,
@@ -261,7 +264,7 @@ def dlg_repuesto(rid: str | None, pre: dict | None = None):
             st.error("Escribe la referencia.")
             return
         v = {k: st.session_state["e_" + k].strip() for k in ("pedido", "ref", "desc", "cliente", "nota")}
-        v["resp"] = (st.session_state.e_resp or "").strip()
+        v["resp"] = L.norm_resp(st.session_state.e_resp)
         v.update(fecha=iso(st.session_state.e_fecha), eta=iso(st.session_state.e_eta),
                  llegada=iso(st.session_state.e_llegada), canal=st.session_state.e_canal,
                  estado=st.session_state.e_estado, envio=st.session_state.e_envio,
@@ -332,7 +335,7 @@ with tab_t:
                          format_func=lambda x: "Todos los canales" if not x else
                          ("Vacío (sin canal)" if x == VACIO else x),
                          label_visibility="collapsed")
-    resps = sorted({r.get("resp") for r in rows.values() if r.get("resp")})
+    resps = L.lista_responsables(rows)
     f_resp = f4.selectbox("Responsable", ["", VACIO] + resps,
                           format_func=lambda x: "Todos los responsables" if not x else
                           ("Vacío (sin responsable)" if x == VACIO else x),

@@ -47,6 +47,13 @@ _PREFIJO = "" if SEDE == "173" else "s" + re.sub(r"\W", "", SEDE).lower() + "_"
 # Solo la 173 recibe dos Excel de fábrica (sede + Colisión); las demás, uno.
 VARIOS_EXCEL = (_secreto("VARIOS_EXCEL") or ("si" if SEDE == "173" else "no")).lower() in ("si", "sí", "1", "true")
 NOMBRE = f"Yokomotor {SEDE}"
+# Responsables fijos por sede (aparecen siempre en las listas, en MAYÚSCULA y sin repetirse)
+RESPONSABLES_SEDE = {
+    "72": ["DAVID CARDONA", "ALEJANDRO JAIMES", "YULIETH GARCIA", "JHONATAN MONTILLA", "LUIS MICAN",
+           "DIEGO ZAMUDIO", "STEVEN LOPEZ", "CRISTIAN MILLARES", "JOHN GARZON", "JASON FRANCO", "EDNA CONTRERAS"],
+}
+RESPONSABLES_BASE = RESPONSABLES_SEDE.get(SEDE, [])
+MAYUS_RESP = SEDE in RESPONSABLES_SEDE  # en estas sedes los responsables se guardan en MAYÚSCULA
 _TABLAS = re.compile(r"\b(repuestos|cargas|empaques|config)\b")
 
 
@@ -1195,3 +1202,36 @@ def pdf_canal(rows, canal: str, alcance: str, actualizado: str | None) -> bytes:
 
     doc.build(story, onFirstPage=pie, onLaterPages=pie)
     return buf.getvalue()
+
+
+# ------------------------------------------------------ Responsables
+def norm_resp(nombre) -> str:
+    """En las sedes con lista fija: MAYÚSCULA, sin espacios dobles, y si coincide con un nombre
+    de la lista (aunque cambie una tilde o una mayúscula) se usa el de la lista."""
+    t = re.sub(r"\s+", " ", str(nombre or "")).strip()
+    if not t or not MAYUS_RESP:
+        return t
+    clave_ = fold(t)
+    for base in RESPONSABLES_BASE:
+        if fold(base) == clave_:
+            return base
+    return t.upper()
+
+
+def lista_responsables(rows: dict) -> list[str]:
+    """Responsables de la lista fija + los que ya están en los datos, sin repetir."""
+    vistos, out = set(), []
+    for n in list(RESPONSABLES_BASE) + sorted({norm_resp(r.get("resp")) for r in rows.values() if r.get("resp")}):
+        k = fold(n)
+        if n and k not in vistos:
+            vistos.add(k)
+            out.append(n)
+    return sorted(out, key=fold)
+
+
+def normalizar_responsables(rows: dict) -> dict:
+    """Patch para dejar los responsables escritos igual (solo en sedes con lista fija)."""
+    if not MAYUS_RESP:
+        return {}
+    return {rid: {"resp": norm_resp(r.get("resp"))} for rid, r in rows.items()
+            if r.get("resp") and norm_resp(r.get("resp")) != r.get("resp")}

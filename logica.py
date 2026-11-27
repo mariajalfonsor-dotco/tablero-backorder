@@ -324,7 +324,7 @@ def diagnostico_db() -> str:
     """Prueba una conexión directa y describe el resultado sin mostrar la contraseña."""
     from urllib.parse import urlsplit, unquote
     url = (_db_url() or "").strip()
-    lineas = [f"Sede: {SEDE}  ·  tablas: {_PREFIJO or '(sin prefijo)'}repuestos"]
+    lineas = [f"Sede: {SEDE}  ·  tablas: {_PREFIJO}repuestos"]
     if not url:
         return "\n".join(lineas + ["No hay DATABASE_URL en los secretos."])
     try:
@@ -356,6 +356,10 @@ def conectar():
     if usa_postgres():
         global _pool
         if _pool is None:
+            # Primero una conexión de prueba: si la contraseña está mal, falla una sola vez y no
+            # se queda reintentando (muchos intentos fallidos hacen que Supabase bloquee el acceso).
+            import psycopg
+            psycopg.connect(_db_url(), connect_timeout=15, prepare_threshold=None).close()
             from psycopg_pool import ConnectionPool
             _pool = ConnectionPool(_db_url(), min_size=1, max_size=4, open=True, timeout=30,
                                    kwargs={"prepare_threshold": None})

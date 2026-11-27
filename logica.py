@@ -309,6 +309,48 @@ class _Cx:
             self.raw.executemany(self._q(sql), seq)
 
 
+def cerrar_pool():
+    """Cierra el pool de conexiones (para reintentar después de corregir los secretos)."""
+    global _pool
+    if _pool is not None:
+        try:
+            _pool.close()
+        except Exception:
+            pass
+        _pool = None
+
+
+def diagnostico_db() -> str:
+    """Prueba una conexión directa y describe el resultado sin mostrar la contraseña."""
+    from urllib.parse import urlsplit, unquote
+    url = (_db_url() or "").strip()
+    lineas = [f"Sede: {SEDE}  ·  tablas: {_PREFIJO or '(sin prefijo)'}repuestos"]
+    if not url:
+        return "\n".join(lineas + ["No hay DATABASE_URL en los secretos."])
+    try:
+        u = urlsplit(url)
+        clave = unquote(u.password or "")
+        lineas += [f"Usuario: {u.username}", f"Servidor: {u.hostname}  ·  puerto: {u.port}",
+                   f"Base: {u.path.lstrip('/')}",
+                   f"Contraseña: {len(clave)} caracteres"
+                   + ("  ⚠ tiene %25: puede estar codificada dos veces" if "%25" in (u.password or "") else "")]
+        if any(c.isspace() for c in url):
+            lineas.append("⚠ La dirección tiene espacios o saltos de línea: debe ir en un solo renglón.")
+    except Exception as e:
+        lineas.append(f"La dirección no tiene un formato válido: {e}")
+    try:
+        import psycopg
+        with psycopg.connect(url, connect_timeout=15, prepare_threshold=None) as c:
+            c.execute("select 1")
+        lineas.append("Conexión directa: OK (vuelve a intentar).")
+    except Exception as e:
+        msg = str(e)
+        if u.password:
+            msg = msg.replace(u.password, "***")
+        lineas.append(f"Conexión directa falló: {type(e).__name__}: {msg[:400]}")
+    return "\n".join(lineas)
+
+
 @contextmanager
 def conectar():
     if usa_postgres():

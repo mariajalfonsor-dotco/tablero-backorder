@@ -26,6 +26,11 @@ try:
 except Exception as e:  # p. ej. clave de Supabase mal escrita
     st.error("No se pudo conectar con la base de datos. Revisa DATABASE_URL en los secretos de la app "
              f"(Settings → Secrets).\n\nDetalle: {type(e).__name__}: {e}")
+    st.markdown("**Diagnóstico** (sin mostrar la contraseña):")
+    st.code(L.diagnostico_db(), language=None)
+    L.cerrar_pool()
+    if st.button("Reintentar"):
+        st.rerun()
     st.stop()
 
 # ------------------------------------------------------------------ estilos

@@ -747,7 +747,7 @@ with tab_r:
     st.divider()
     st.markdown("#### Tablero completo (Excel)")
     if st.button("Preparar Excel del tablero"):
-        st.session_state.xlsx_tab = L.excel_tablero(rows, ENVIO_DEF)
+        st.session_state.xlsx_tab = L.excel_tablero(rows, ENVIO_DEF, cfg)
     if st.session_state.get("xlsx_tab"):
         st.download_button("Descargar Excel", st.session_state.xlsx_tab, f"Backorder {L.NOMBRE} - {HOY}.xlsx")
 

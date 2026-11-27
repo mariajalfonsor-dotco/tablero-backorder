@@ -904,7 +904,7 @@ def registrar_empaque(rows, pk: dict, res: dict, archivo: str) -> dict:
 
 
 # ------------------------------------------------------ Excel de salida
-def _xlsx(hojas: dict[str, tuple[list[str], list[list]]], rojos: dict | None = None) -> bytes:
+def _xlsx(hojas: dict[str, tuple[list[str], list[list]]], rojos: dict | None = None, estilo=None) -> bytes:
     from openpyxl import Workbook
     from openpyxl.styles import Font, PatternFill
     wb = Workbook()
@@ -927,25 +927,121 @@ def _xlsx(hojas: dict[str, tuple[list[str], list[list]]], rojos: dict | None = N
         for fila, col in (rojos or {}).get(nombre, ()):
             ws.cell(row=fila, column=col).font = Font(color="D32F2F", bold=True)
         ws.freeze_panes = "A2"
+        if estilo:
+            estilo(nombre, ws)
     buf = io.BytesIO()
     wb.save(buf)
     return buf.getvalue()
 
 
-def excel_tablero(rows: dict[str, dict], envio_defecto="28") -> bytes:
+# Colores del Excel del tablero (los mismos de la página)
+XL_TINTE = {"colision": "D4E3F8", "boutique": "E4E6E9", "mostrador": "D6EFD9", "stock": None, "mecanica": "F8D4D4"}
+XL_CHIP = {"colision": "2463C4", "boutique": "8C9199", "mostrador": "2E9E46", "stock": None, "mecanica": "D32F2F",
+           "otro": "5D6573"}
+XL_ESTADO = {"Alerta": "B42318", "Revisar": "A15C00", "Sin ETA": "2F5AA8", "Llegó": "1F7A4D", "Parcial": "2F5AA8",
+             "Cancelado": "7A7A7A", "Pendiente": "A15C00"}
+XL_NUEVO, XL_UPD = "E6DCFA", "FFE98A"
+
+
+def excel_tablero(rows: dict[str, dict], envio_defecto="28", cfg: dict | None = None) -> bytes:
+    """Excel del tablero completo con los colores de la página: fila por canal, canal resaltado,
+    ETA calculada en rojo, estado en color, estimados en gris, nuevos en morado y actualizados en amarillo."""
+    cfg = cfg or {}
     head = ["#", "PEDIDO", "FECHA PEDIDO", "REFERENCIA", "DESCRIPCIÓN", "CANTIDAD", "CANT. FÁBRICA", "ETA",
             "CANAL", "CLIENTE", "RESPONSABLE", "FECHA REAL LLEGADA", "LEAD TIME (DÍAS HÁBILES)", "TIPO LEAD TIME",
             "ESTADO", "NOTA"]
-    filas = []
-    for r in sorted(rows.values(), key=lambda r: r.get("n") or 0):
+    orden = sorted(rows.values(), key=lambda r: r.get("n") or 0)
+    filas, info = [], []
+    hoy_ = hoy()
+    for r in orden:
         lt, est = lead_time_info(r, envio_defecto)
+        em = estado_mostrado(r)
         filas.append([r.get("n"), r.get("pedido"), r.get("fecha"), r.get("ref"), r.get("desc"), r.get("cant"),
                       r.get("cantFab"), eta_mostrada(r)[0], r.get("canal"), r.get("cliente"), r.get("resp"),
                       r.get("llegada"), "-" if lt is None else lt, "" if lt is None else ("Estimado" if est else "Real"),
-                      estado_mostrado(r), r.get("nota") or ""])
-    rojos = {(i + 2, 8) for i, r in enumerate(sorted(rows.values(), key=lambda r: r.get("n") or 0))
-             if eta_mostrada(r)[1]}
-    return _xlsx({"Tablero": (head, filas)}, rojos={"Tablero": rojos})
+                      em, r.get("nota") or ""])
+        info.append((r, em, est))
+
+    def estilo(_nombre, ws):
+        from openpyxl.styles import Border, Font, PatternFill, Side
+        fills = {}
+
+        def fill(color):
+            if color not in fills:
+                fills[color] = PatternFill("solid", fgColor=color)
+            return fills[color]
+        negro = Side(style="thin", color="16191F")
+        dorado = Side(style="thin", color="C9A200")
+        n_col = len(head)
+        for i, (r, em, est) in enumerate(info):
+            fila = i + 2
+            k = canal_key(r.get("canal")) if r.get("canal") else None
+            nuevo = es_nuevo(r, cfg)
+            fondo = XL_NUEVO if nuevo else (XL_TINTE.get(k) if k else None)
+            if fondo:
+                for col in range(1, n_col + 1):
+                    ws.cell(row=fila, column=col).fill = fill(fondo)
+            if k:
+                c = ws.cell(row=fila, column=9)
+                if XL_CHIP.get(k):
+                    c.fill = fill(XL_CHIP[k])
+                    c.font = Font(bold=True, color="FFFFFF")
+                else:  # Stock: blanco con borde
+                    c.fill = fill("FFFFFF")
+                    c.font = Font(bold=True, color="16191F")
+                    c.border = Border(left=negro, right=negro, top=negro, bottom=negro)
+            c_eta = ws.cell(row=fila, column=8)
+            categoria = cat(r, hoy_)
+            if eta_mostrada(r)[1]:
+                c_eta.font = Font(bold=True, color="D32F2F")
+            elif categoria == "vencida":
+                c_eta.font = Font(bold=True, color="16191F")
+            elif categoria == "revisar":
+                c_eta.font = Font(color="8A8F99", strike=True)
+            color_est = next((v for kk, v in XL_ESTADO.items() if em.startswith(kk)), "16191F")
+            ws.cell(row=fila, column=15).font = Font(bold=True, color=color_est)
+            if est:
+                for col in (13, 14):
+                    ws.cell(row=fila, column=col).font = Font(italic=True, color="6B7280")
+            if r.get("llegadaEstimada"):
+                ws.cell(row=fila, column=12).font = Font(italic=True, color="6B7280")
+            upd = campos_actualizados(r, cfg)
+            for campo, col in (("eta", 8), ("cantFab", 7), ("estado", 15)):
+                if campo in upd:
+                    c = ws.cell(row=fila, column=col)
+                    c.fill = fill(XL_UPD)
+                    c.font = Font(bold=True, color="6B4F00")
+                    c.border = Border(left=dorado, right=dorado, top=dorado, bottom=dorado)
+        ws.auto_filter.ref = ws.dimensions
+        ws.page_setup.orientation = "landscape"  # al imprimir: horizontal y todas las columnas en una página
+        ws.page_setup.fitToWidth, ws.page_setup.fitToHeight = 1, 0
+        ws.sheet_properties.pageSetUpPr.fitToPage = True
+        # Leyenda en una hoja aparte
+        lw = ws.parent.create_sheet("Leyenda")
+        lw.column_dimensions["A"].width = 26
+        lw.column_dimensions["B"].width = 60
+        lw.append(["COLOR", "SIGNIFICADO"])
+        for c in lw[1]:
+            c.font = Font(bold=True, color="FFFFFF")
+            c.fill = fill("16191F")
+        leyenda = [("Colisión", XL_CHIP["colision"], "FFFFFF", "Canal Colisión (fila azul claro)"),
+                   ("Mostrador", XL_CHIP["mostrador"], "FFFFFF", "Canal Mostrador (fila verde claro)"),
+                   ("Mecánica", XL_CHIP["mecanica"], "FFFFFF", "Canal Mecánica (fila rojo claro)"),
+                   ("Boutique", XL_CHIP["boutique"], "FFFFFF", "Canal Boutique (fila gris claro)"),
+                   ("Stock", "FFFFFF", "16191F", "Repuestos Stock Almacén (fila blanca)"),
+                   ("Nuevo", XL_NUEVO, "16191F", "Repuesto nuevo agregado desde la fábrica en la última carga"),
+                   ("Actualizado", XL_UPD, "6B4F00", "Dato actualizado por la fábrica en la última carga"),
+                   ("ETA roja", None, "D32F2F", "ETA calculada (no la dio Toyota)"),
+                   ("ETA negra", None, "16191F", "ETA suministrada por Toyota"),
+                   ("Gris cursiva", None, "6B7280", "Fecha de llegada / lead time estimados")]
+        for nombre, bg, fg, texto in leyenda:
+            lw.append([nombre, texto])
+            c = lw.cell(row=lw.max_row, column=1)
+            c.font = Font(bold=True, color=fg, italic=(nombre == "Gris cursiva"))
+            if bg:
+                c.fill = fill(bg)
+
+    return _xlsx({"Tablero": (head, filas)}, estilo=estilo)
 
 
 def excel_carga(c: dict) -> bytes:
